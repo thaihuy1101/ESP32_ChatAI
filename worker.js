@@ -12,7 +12,7 @@ export default {
         const audioBuffer = await request.arrayBuffer();
         
         const formData = new FormData();
-        formData.append("file", new Blob([audioBuffer], { type: "audio/wav" }), "audio.wav");
+        formData.append("file", new File([audioBuffer], "audio.wav", { type: "audio/wav" }));
         formData.append("model", "whisper-large-v3-turbo"); 
         formData.append("language", "vi");
         formData.append("response_format", "json");
@@ -24,7 +24,7 @@ export default {
           body: formData
         });
 
-        if (!sttResponse.ok) throw new Error(`STT Failed: ${await sttResponse.text()}`);
+        if (!sttResponse.ok) throw new Error(`STT Failed (Size ${audioBuffer.byteLength}): ${await sttResponse.text()}`);
         
         const sttData = await sttResponse.json();
         const userText = sttData.text || "";
