@@ -10,6 +10,7 @@ export default {
 
       try {
         const audioBuffer = await request.arrayBuffer();
+        console.log(`[INFO] Received POST /chat. Audio buffer size: ${audioBuffer.byteLength} bytes.`);
         
         const formData = new FormData();
         formData.append("file", new File([audioBuffer], "audio.wav", { type: "audio/wav" }));
@@ -24,9 +25,16 @@ export default {
           body: formData
         });
 
-        if (!sttResponse.ok) throw new Error(`STT Failed (Size ${audioBuffer.byteLength}): ${await sttResponse.text()}`);
+        console.log(`[INFO] Sent to Groq STT. Status: ${sttResponse.status}`);
+        
+        if (!sttResponse.ok) {
+           const errText = await sttResponse.text();
+           console.log(`[ERROR] Groq STT Failed: ${errText}`);
+           throw new Error(`STT Failed (Size ${audioBuffer.byteLength}): ${errText}`);
+        }
         
         const sttData = await sttResponse.json();
+        console.log(`[INFO] Groq STT Result:`, JSON.stringify(sttData));
         const userText = sttData.text || "";
 
         if (!userText.trim()) return new Response(JSON.stringify({ error: "No speech" }), { status: 400 });
@@ -52,9 +60,16 @@ export default {
           })
         });
 
-        if (!llmResponse.ok) throw new Error(`LLM Failed`);
+        console.log(`[INFO] Sent to Groq LLM. Status: ${llmResponse.status}`);
+
+        if (!llmResponse.ok) {
+           const llmErr = await llmResponse.text();
+           console.log(`[ERROR] Groq LLM Failed: ${llmErr}`);
+           throw new Error(`LLM Failed`);
+        }
 
         const llmData = await llmResponse.json();
+        console.log(`[INFO] Groq LLM Result:`, JSON.stringify(llmData));
         let aiText = llmData.choices[0].message.content.trim();
         // Xóa ký tự đặc biệt
         aiText = aiText.replace(/[*_#~]/g, '');
@@ -68,6 +83,7 @@ export default {
         });
 
       } catch (err) {
+        console.log(`[FATAL ERROR] Worker Exception: ${err.message}`);
         return new Response(JSON.stringify({ error: err.message }), { status: 500 });
       }
     }
