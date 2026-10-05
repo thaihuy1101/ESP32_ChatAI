@@ -2,7 +2,4 @@ name = "esp32-ai-backend"
 main = "worker.js"
 compatibility_date = "2024-03-29"
 
-[vars]
-# Bạn KHÔNG ĐƯỢC ĐIỀN API Key vào đây để đẩy lên GitHub (sẽ bị chặn vì lý do bảo mật).
-# Hãy khai báo nó trực tiếp trên Cloudflare Dashboard (Settings -> Variables).
-GROQ_API_KEY = ""
+
