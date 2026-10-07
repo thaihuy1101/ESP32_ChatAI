@@ -57,8 +57,11 @@ export default {
                 const wData = await weatherRes.json();
                 outsideInfo = `Nhiệt độ ngoài trời ở ${city} là ${wData.current.temperature_2m} độ C, độ ẩm ${wData.current.relative_humidity_2m} phần trăm.`;
             }
-            if (roomInfo || outsideInfo) {
-                weatherContext = `(Ghi chú: ${roomInfo}${outsideInfo})`;
+            const now = new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", dateStyle: "full", timeStyle: "short" });
+            const timeInfo = `Bây giờ là ${now}. `;
+
+            if (roomInfo || outsideInfo || timeInfo) {
+                weatherContext = `(Thông tin hiện tại: ${timeInfo}${roomInfo}${outsideInfo})`;
             }
         } catch(e) {}
 
