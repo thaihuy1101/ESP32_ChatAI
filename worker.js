@@ -180,7 +180,10 @@ export default {
           headers: { "Authorization": `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({
             model: "openai/gpt-oss-20b",
-            messages: [{ role: "user", content: text }],
+            messages: [
+              { role: "system", content: "Hãy trả lời CỰC KỲ NGẮN GỌN dưới 10 từ." },
+              { role: "user", content: text }
+            ],
             max_tokens: 100
           })
         });
@@ -223,7 +226,10 @@ export default {
           const ttsResponse = await fetch(ttsUrl, {
             headers: { "User-Agent": "Mozilla/5.0" }
           });
-          if (!ttsResponse.ok) return new Response("Google TTS Failed", { status: 500 });
+          if (!ttsResponse.ok) {
+             const gErr = await ttsResponse.text();
+             return new Response(`Google TTS Failed: HTTP ${ttsResponse.status} - ${gErr} \n\n (Text length: ${aiText.length})`, { status: 500 });
+          }
           ttsTime = Date.now() - ttsStart;
         }
         
