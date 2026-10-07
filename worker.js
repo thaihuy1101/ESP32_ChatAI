@@ -168,46 +168,58 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/test_chat") {
-      const text = url.searchParams.get("text") || "thời tiết hôm nay thế nào";
-      const start = Date.now();
-      
-      const GROQ_API_KEY = env.GROQ_API_KEY;
-      const FPT_API_KEY = env.FPT_API_KEY;
-      
-      const llmResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "llama3-8b-8192", // Using a valid Groq model
-          messages: [{ role: "user", content: text }],
-          max_tokens: 100
-        })
-      });
-      const llmData = await llmResponse.json();
-      const llmTime = Date.now() - start;
-      const aiText = llmData.choices[0].message.content.trim();
-      
-      const ttsStart = Date.now();
-      const fptRes = await fetch("https://api.fpt.ai/hmi/tts/v5", {
-        method: "POST",
-        headers: { "api-key": FPT_API_KEY, "voice": "banmai", "speed": "0" },
-        body: aiText
-      });
-      let ttsTime = 0;
-      if (fptRes.ok) {
-        const fptData = await fptRes.json();
-        const asyncUrl = fptData.async;
-        for (let i = 0; i < 40; i++) {
-          await new Promise(r => setTimeout(r, 500));
-          const audioRes = await fetch(asyncUrl);
-          if (audioRes.ok) {
-             break;
-          }
+      try {
+        const text = url.searchParams.get("text") || "thời tiết hôm nay thế nào";
+        const start = Date.now();
+        
+        const GROQ_API_KEY = env.GROQ_API_KEY;
+        const FPT_API_KEY = env.FPT_API_KEY;
+        
+        const llmResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "llama3-8b-8192", // Using a valid Groq model
+            messages: [{ role: "user", content: text }],
+            max_tokens: 100
+          })
+        });
+        const llmData = await llmResponse.json();
+        if (!llmResponse.ok) {
+           return new Response(`Groq LLM Error: ${JSON.stringify(llmData)}`, { status: 500 });
         }
-        ttsTime = Date.now() - ttsStart;
+        
+        const llmTime = Date.now() - start;
+        const aiText = llmData.choices[0].message.content.trim();
+        
+        const ttsStart = Date.now();
+        const fptRes = await fetch("https://api.fpt.ai/hmi/tts/v5", {
+          method: "POST",
+          headers: { "api-key": FPT_API_KEY, "voice": "banmai", "speed": "0" },
+          body: aiText
+        });
+        
+        let ttsTime = 0;
+        if (fptRes.ok) {
+          const fptData = await fptRes.json();
+          const asyncUrl = fptData.async;
+          for (let i = 0; i < 40; i++) {
+            await new Promise(r => setTimeout(r, 500));
+            const audioRes = await fetch(asyncUrl);
+            if (audioRes.ok) {
+               break;
+            }
+          }
+          ttsTime = Date.now() - ttsStart;
+        } else {
+           const fptErr = await fptRes.text();
+           return new Response(`FPT Error: ${fptErr}`, { status: 500 });
+        }
+        
+        return new Response(`LLM Latency: ${llmTime}ms\nFPT TTS Latency: ${ttsTime}ms\nResponse Text: ${aiText}`);
+      } catch (err) {
+        return new Response(`Code Exception: ${err.message}`, { status: 500 });
       }
-      
-      return new Response(`LLM Latency: ${llmTime}ms\nFPT TTS Latency: ${ttsTime}ms\nResponse Text: ${aiText}`);
     }
 
     return new Response("ESP32 AI Backend is running!", { status: 200 });
