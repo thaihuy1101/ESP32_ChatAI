@@ -48,9 +48,9 @@ export default {
                 }
             }
             
-            const city = request.cf?.city || "Việt Nam"; // Lấy thành phố từ IP
-            const lat = request.cf?.latitude || 21.0285;
-            const lon = request.cf?.longitude || 105.8542;
+            const city = request.cf?.city && request.cf.city !== "Việt Nam" ? request.cf.city : "Biên Hòa, Đồng Nai";
+            const lat = request.cf?.latitude || 10.9454;
+            const lon = request.cf?.longitude || 106.8243;
             const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m`);
             let outsideInfo = "";
             if(weatherRes.ok) {
@@ -65,7 +65,7 @@ export default {
         const lastUserEnc = request.headers.get("X-Last-User");
         const lastAiEnc = request.headers.get("X-Last-AI");
         const msgList = [
-          { role: "system", content: `Bạn là trợ lý ảo tên Groq. Hãy trả lời thân thiện, vui vẻ. BẮT BUỘC trả lời TỐI ĐA 2 CÂU và DƯỚI 30 TỪ để không bị tràn màn hình thiết bị. KHÔNG liệt kê dài dòng. ${weatherContext}` }
+          { role: "system", content: `Bạn là trợ lý ảo thông minh. Hãy trả lời thân thiện, vui vẻ và tự nhiên. Hãy trả lời đầy đủ chi tiết, nhưng đừng quá lạm dụng danh sách dài dòng. Thi thoảng hãy đặt một câu hỏi ngược lại cho người dùng cuối câu để duy trì cuộc trò chuyện. ${weatherContext}` }
         ];
         
         if (lastUserEnc && lastAiEnc) {
