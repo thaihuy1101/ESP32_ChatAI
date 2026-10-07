@@ -22,7 +22,14 @@ export default {
 
         if (!sttResponse.ok) {
             const errorText = await sttResponse.text();
-            throw new Error(`STT Failed: ${errorText}`);
+            let shortError = errorText;
+            try {
+               const errJson = JSON.parse(errorText);
+               if (errJson.error && errJson.error.message) {
+                   shortError = errJson.error.message;
+               }
+            } catch(e) {}
+            throw new Error(`STT: ${shortError}`);
         }
         const sttData = await sttResponse.json();
         const userText = sttData.text || "";
