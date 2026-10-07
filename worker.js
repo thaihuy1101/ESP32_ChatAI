@@ -88,7 +88,7 @@ export default {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            model: "openai/gpt-oss-20b",
+            model: "mixtral-8x7b-32768",
             messages: msgList,
             temperature: 0.7,
             max_tokens: 150
@@ -99,6 +99,7 @@ export default {
 
         const llmData = await llmResponse.json();
         let aiText = llmData.choices[0].message.content.trim();
+        if (!aiText) aiText = "Tôi không có câu trả lời.";
         aiText = aiText.replace(/[*_#~]/g, '');
 
         return new Response(JSON.stringify({
@@ -179,7 +180,7 @@ export default {
           method: "POST",
           headers: { "Authorization": `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "openai/gpt-oss-20b",
+            model: "mixtral-8x7b-32768",
             messages: [
               { role: "system", content: "Hãy trả lời CỰC KỲ NGẮN GỌN dưới 10 từ." },
               { role: "user", content: text }
@@ -193,7 +194,8 @@ export default {
         }
         
         const llmTime = Date.now() - start;
-        const aiText = llmData.choices[0].message.content.trim();
+        let aiText = llmData.choices[0].message.content.trim();
+        if (!aiText) aiText = "Lỗi rỗng từ mô hình.";
         
         const ttsStart = Date.now();
         let ttsTime = 0;
