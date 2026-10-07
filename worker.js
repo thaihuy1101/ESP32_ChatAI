@@ -65,7 +65,7 @@ export default {
         const lastUserEnc = request.headers.get("X-Last-User");
         const lastAiEnc = request.headers.get("X-Last-AI");
         const msgList = [
-          { role: "system", content: `Bạn là trợ lý ảo thông minh. Hãy trả lời thân thiện, vui vẻ và tự nhiên. Hãy trả lời đầy đủ chi tiết, nhưng đừng quá lạm dụng danh sách dài dòng. Thi thoảng hãy đặt một câu hỏi ngược lại cho người dùng cuối câu để duy trì cuộc trò chuyện. ${weatherContext}` }
+          { role: "system", content: `Bạn là trợ lý ảo thông minh. Hãy trả lời thân thiện, vui vẻ và tự nhiên. BẮT BUỘC trả lời NGẮN GỌN dưới 3-4 câu (dưới 40 từ) để không quá tải bộ nhớ thiết bị. Thi thoảng hãy đặt một câu hỏi ngược lại cho người dùng cuối câu để duy trì trò chuyện. ${weatherContext}` }
         ];
         
         if (lastUserEnc && lastAiEnc) {
