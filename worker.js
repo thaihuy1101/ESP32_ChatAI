@@ -134,9 +134,9 @@ export default {
         const fptData = await fptRes.json();
         const asyncUrl = fptData.async;
 
-        // Polling để đợi file audio gen xong
-        for (let i = 0; i < 20; i++) {
-          await new Promise(r => setTimeout(r, 200)); // Đợi 200ms mỗi vòng
+        // Polling để đợi file audio gen xong (Đợi tối đa 20 giây vì FPT AI đôi khi xử lý rất chậm)
+        for (let i = 0; i < 40; i++) {
+          await new Promise(r => setTimeout(r, 500)); // Đợi 500ms mỗi vòng
           const audioRes = await fetch(asyncUrl);
           if (audioRes.ok) {
             const contentType = audioRes.headers.get("content-type") || "";
