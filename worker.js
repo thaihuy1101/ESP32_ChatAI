@@ -88,7 +88,7 @@ export default {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            model: "mixtral-8x7b-32768",
+            model: "qwen/qwen3.8-27b",
             messages: msgList,
             temperature: 0.7,
             max_tokens: 150
@@ -180,7 +180,7 @@ export default {
           method: "POST",
           headers: { "Authorization": `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "mixtral-8x7b-32768",
+            model: "qwen/qwen3.8-27b",
             messages: [
               { role: "system", content: "Hãy trả lời CỰC KỲ NGẮN GỌN dưới 10 từ." },
               { role: "user", content: text }
