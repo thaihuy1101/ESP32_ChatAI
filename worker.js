@@ -20,7 +20,10 @@ export default {
           body: formData
         });
 
-        if (!sttResponse.ok) throw new Error(`STT Failed`);
+        if (!sttResponse.ok) {
+            const errorText = await sttResponse.text();
+            throw new Error(`STT Failed: ${errorText}`);
+        }
         const sttData = await sttResponse.json();
         const userText = sttData.text || "";
 
