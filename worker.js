@@ -88,7 +88,7 @@ export default {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            model: "llama-3.1-8b-instant",
+            model: "openai/gpt-oss-20b",
             messages: msgList,
             temperature: 0.7,
             max_tokens: 150
@@ -179,7 +179,7 @@ export default {
           method: "POST",
           headers: { "Authorization": `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "llama-3.1-8b-instant",
+            model: "openai/gpt-oss-20b",
             messages: [{ role: "user", content: text }],
             max_tokens: 100
           })
