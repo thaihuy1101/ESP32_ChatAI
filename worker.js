@@ -193,27 +193,38 @@ export default {
         const aiText = llmData.choices[0].message.content.trim();
         
         const ttsStart = Date.now();
-        const fptRes = await fetch("https://api.fpt.ai/hmi/tts/v5", {
-          method: "POST",
-          headers: { "api-key": FPT_API_KEY, "voice": "banmai", "speed": "0" },
-          body: aiText
-        });
-        
         let ttsTime = 0;
-        if (fptRes.ok) {
-          const fptData = await fptRes.json();
-          const asyncUrl = fptData.async;
-          for (let i = 0; i < 40; i++) {
-            await new Promise(r => setTimeout(r, 500));
-            const audioRes = await fetch(asyncUrl);
-            if (audioRes.ok) {
-               break;
+        
+        if (FPT_API_KEY) {
+          const fptRes = await fetch("https://api.fpt.ai/hmi/tts/v5", {
+            method: "POST",
+            headers: { "api-key": FPT_API_KEY, "voice": "banmai", "speed": "0" },
+            body: aiText
+          });
+          if (fptRes.ok) {
+            const fptData = await fptRes.json();
+            const asyncUrl = fptData.async;
+            for (let i = 0; i < 40; i++) {
+              await new Promise(r => setTimeout(r, 500));
+              const audioRes = await fetch(asyncUrl);
+              if (audioRes.ok) {
+                 break;
+              }
             }
+            ttsTime = Date.now() - ttsStart;
+          } else {
+             const fptErr = await fptRes.text();
+             return new Response(`FPT Error: ${fptErr}`, { status: 500 });
           }
-          ttsTime = Date.now() - ttsStart;
         } else {
-           const fptErr = await fptRes.text();
-           return new Response(`FPT Error: ${fptErr}`, { status: 500 });
+          // Fallback to Google TTS
+          const encodedText = encodeURIComponent(aiText);
+          const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=${encodedText}`;
+          const ttsResponse = await fetch(ttsUrl, {
+            headers: { "User-Agent": "Mozilla/5.0" }
+          });
+          if (!ttsResponse.ok) return new Response("Google TTS Failed", { status: 500 });
+          ttsTime = Date.now() - ttsStart;
         }
         
         return new Response(`LLM Latency: ${llmTime}ms\nFPT TTS Latency: ${ttsTime}ms\nResponse Text: ${aiText}`);
