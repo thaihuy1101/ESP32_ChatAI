@@ -146,14 +146,17 @@ export default {
         
         if (zaloData.error_code === 0 && zaloData.data && zaloData.data.url) {
             const asyncUrl = zaloData.data.url;
-            // Zalo gen file, cần poll
+            // Zalo gen file, cần đợi xíu để file được ghi hoàn tất lên server
             for (let i = 0; i < 20; i++) {
+              await new Promise(r => setTimeout(r, 500)); // BẮT BUỘC đợi 500ms trước khi tải để tránh file rỗng gây treo libmad
               const audioRes = await fetch(asyncUrl);
               if (audioRes.ok) {
                 const mp3Buffer = await audioRes.arrayBuffer();
-                return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
+                // Chỉ trả về nếu file thực sự có dữ liệu (lớn hơn 100 bytes)
+                if (mp3Buffer.byteLength > 100) {
+                    return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
+                }
               }
-              await new Promise(r => setTimeout(r, 500)); // Đợi nửa giây nếu file chưa sẵn sàng
             }
             return new Response("Zalo TTS Timeout", { status: 504 });
         }
