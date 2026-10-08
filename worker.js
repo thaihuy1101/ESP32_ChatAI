@@ -122,7 +122,43 @@ export default {
       if (!text) return new Response("Missing text parameter", { status: 400 });
 
       const FPT_API_KEY = env.FPT_API_KEY;
-      if (FPT_API_KEY) {
+      const ZALO_API_KEY = env.ZALO_API_KEY;
+
+      if (ZALO_API_KEY) {
+        // Dùng API Zalo AI TTS
+        const params = new URLSearchParams();
+        params.append('input', text);
+        params.append('speaker_id', '1'); // 1: Nữ Miền Nam, 2: Nữ Bắc, 3: Nam Nam, 4: Nam Bắc
+        params.append('speed', '0.8');
+
+        const zaloRes = await fetch("https://api.zalo.ai/v1/tts/synthesize", {
+          method: "POST",
+          headers: {
+            "apikey": ZALO_API_KEY,
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          body: params.toString()
+        });
+
+        if (!zaloRes.ok) return new Response("Zalo TTS Request Failed", { status: 500 });
+        const zaloData = await zaloRes.json();
+        
+        if (zaloData.error_code === 0 && zaloData.data && zaloData.data.url) {
+            const asyncUrl = zaloData.data.url;
+            // Zalo gen file, cần poll nhẹ vài giây
+            for (let i = 0; i < 20; i++) {
+              await new Promise(r => setTimeout(r, 500));
+              const audioRes = await fetch(asyncUrl);
+              if (audioRes.ok) {
+                const mp3Buffer = await audioRes.arrayBuffer();
+                return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
+              }
+            }
+            return new Response("Zalo TTS Timeout", { status: 504 });
+        }
+        return new Response("Zalo API Error", { status: 500 });
+
+      } else if (FPT_API_KEY) {
         // Dùng API FPT AI TTS
         const fptRes = await fetch("https://api.fpt.ai/hmi/tts/v5", {
           method: "POST",
