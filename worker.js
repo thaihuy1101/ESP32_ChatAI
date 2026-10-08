@@ -129,7 +129,7 @@ export default {
         const params = new URLSearchParams();
         params.append('input', text);
         params.append('speaker_id', '1'); // 1: Nữ Miền Nam, 2: Nữ Bắc, 3: Nam Nam, 4: Nam Bắc
-        params.append('speed', '0.8');
+        params.append('speed', '1.1');
         params.append('encode_type', '1'); // Bắt buộc lấy MP3 (Zalo mặc định trả WAV)
 
         const zaloRes = await fetch("https://api.zalo.ai/v1/tts/synthesize", {
@@ -146,14 +146,14 @@ export default {
         
         if (zaloData.error_code === 0 && zaloData.data && zaloData.data.url) {
             const asyncUrl = zaloData.data.url;
-            // Zalo gen file, cần poll nhẹ vài giây
+            // Zalo gen file, cần poll
             for (let i = 0; i < 20; i++) {
-              await new Promise(r => setTimeout(r, 500));
               const audioRes = await fetch(asyncUrl);
               if (audioRes.ok) {
                 const mp3Buffer = await audioRes.arrayBuffer();
                 return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
               }
+              await new Promise(r => setTimeout(r, 500)); // Đợi nửa giây nếu file chưa sẵn sàng
             }
             return new Response("Zalo TTS Timeout", { status: 504 });
         }
@@ -177,7 +177,6 @@ export default {
 
         // Polling để đợi file audio gen xong (Đợi tối đa 20 giây vì FPT AI đôi khi xử lý rất chậm)
         for (let i = 0; i < 40; i++) {
-          await new Promise(r => setTimeout(r, 500)); // Đợi 500ms mỗi vòng
           const audioRes = await fetch(asyncUrl);
           if (audioRes.ok) {
             const contentType = audioRes.headers.get("content-type") || "";
@@ -188,6 +187,7 @@ export default {
               });
             }
           }
+          await new Promise(r => setTimeout(r, 500)); // Đợi nửa giây nếu chưa xong
         }
         return new Response("FPT TTS Timeout", { status: 504 });
       } else {
