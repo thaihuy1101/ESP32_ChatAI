@@ -129,7 +129,7 @@ export default {
         const params = new URLSearchParams();
         params.append('input', text);
         params.append('speaker_id', '1'); // 1: Nữ Miền Nam, 2: Nữ Bắc, 3: Nam Nam, 4: Nam Bắc
-        params.append('speed', '1.1');
+        params.append('speed', '1.0');
         params.append('encode_type', '1'); // Bắt buộc lấy MP3 (Zalo mặc định trả WAV)
 
         const zaloRes = await fetch("https://api.zalo.ai/v1/tts/synthesize", {
