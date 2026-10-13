@@ -178,74 +178,82 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
       const ZALO_API_KEY = env.ZALO_API_KEY;
 
       if (ZALO_API_KEY) {
-        const params = new URLSearchParams();
-        params.append('input', text);
-        params.append('speaker_id', '1');
-        params.append('speed', '1.0');
-        params.append('encode_type', '1');
+        try {
+          const params = new URLSearchParams();
+          params.append('input', text);
+          params.append('speaker_id', '1');
+          params.append('speed', '1.0');
+          params.append('encode_type', '1');
 
-        const zaloRes = await fetch("https://api.zalo.ai/v1/tts/synthesize", {
-          method: "POST",
-          headers: {
-            "apikey": ZALO_API_KEY,
-            "Content-Type": "application/x-www-form-urlencoded"
-          },
-          body: params.toString()
-        });
+          const zaloRes = await fetch("https://api.zalo.ai/v1/tts/synthesize", {
+            method: "POST",
+            headers: {
+              "apikey": ZALO_API_KEY,
+              "Content-Type": "application/x-www-form-urlencoded"
+            },
+            body: params.toString()
+          });
 
-        if (!zaloRes.ok) return new Response("Zalo TTS Request Failed", { status: 500 });
-        const zaloData = await zaloRes.json();
-        
-        if (zaloData.error_code === 0 && zaloData.data && zaloData.data.url) {
-            const asyncUrl = zaloData.data.url;
-            for (let i = 0; i < 20; i++) {
-              await new Promise(r => setTimeout(r, 500));
-              const audioRes = await fetch(asyncUrl);
-              if (audioRes.ok) {
-                const mp3Buffer = await audioRes.arrayBuffer();
-                if (mp3Buffer.byteLength > 100) {
+          if (zaloRes.ok) {
+            const zaloData = await zaloRes.json();
+            if (zaloData.error_code === 0 && zaloData.data && zaloData.data.url) {
+              const asyncUrl = zaloData.data.url;
+              for (let i = 0; i < 20; i++) {
+                await new Promise(r => setTimeout(r, 400));
+                const audioRes = await fetch(asyncUrl);
+                if (audioRes.ok) {
+                  const mp3Buffer = await audioRes.arrayBuffer();
+                  if (mp3Buffer.byteLength > 100) {
                     return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
+                  }
                 }
               }
             }
-            return new Response("Zalo TTS Timeout", { status: 504 });
+          }
+        } catch (e) {
+          console.error("Zalo TTS failed, fallback to Google TTS:", e);
         }
-        return new Response("Zalo API Error", { status: 500 });
+      }
 
-      } else if (FPT_API_KEY) {
-        const fptRes = await fetch("https://api.fpt.ai/hmi/tts/v5", {
-          method: "POST",
-          headers: {
-            "api-key": FPT_API_KEY,
-            "voice": "banmai", 
-            "speed": "0" 
-          },
-          body: text
-        });
+      if (FPT_API_KEY) {
+        try {
+          const fptRes = await fetch("https://api.fpt.ai/hmi/tts/v5", {
+            method: "POST",
+            headers: {
+              "api-key": FPT_API_KEY,
+              "voice": "banmai", 
+              "speed": "0" 
+            },
+            body: text
+          });
 
-        if (!fptRes.ok) return new Response("FPT TTS Request Failed", { status: 500 });
-        const fptData = await fptRes.json();
-        const asyncUrl = fptData.async;
+          if (fptRes.ok) {
+            const fptData = await fptRes.json();
+            const asyncUrl = fptData.async;
 
-        for (let i = 0; i < 40; i++) {
-          const audioRes = await fetch(asyncUrl);
-          if (audioRes.ok) {
-            const contentType = audioRes.headers.get("content-type") || "";
-            if (contentType.includes("audio") || contentType.includes("mpeg") || contentType.includes("octet-stream")) {
-              const mp3Buffer = await audioRes.arrayBuffer();
-              return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
+            for (let i = 0; i < 30; i++) {
+              const audioRes = await fetch(asyncUrl);
+              if (audioRes.ok) {
+                const contentType = audioRes.headers.get("content-type") || "";
+                if (contentType.includes("audio") || contentType.includes("mpeg") || contentType.includes("octet-stream")) {
+                  const mp3Buffer = await audioRes.arrayBuffer();
+                  return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
+                }
+              }
+              await new Promise(r => setTimeout(r, 500));
             }
           }
-          await new Promise(r => setTimeout(r, 500));
-        }
-        return new Response("FPT TTS Timeout", { status: 504 });
-      } else {
-        try {
-          const mp3Buffer = await fetchGoogleTTS(text);
-          return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
         } catch (e) {
-          return new Response("TTS Failed: " + e.message, { status: 500 });
+          console.error("FPT TTS failed, fallback to Google TTS:", e);
         }
+      }
+
+      // DỰ PHÒNG HOÀN HẢO: Nếu Zalo hoặc FPT lỗi/hết lượt/quá dài, tự động dùng Google TTS siêu tốc!
+      try {
+        const mp3Buffer = await fetchGoogleTTS(text);
+        return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
+      } catch (e) {
+        return new Response("TTS Failed: " + e.message, { status: 500 });
       }
     }
 
