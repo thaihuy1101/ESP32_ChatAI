@@ -128,7 +128,11 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
         if (!aiText) aiText = "Tôi không có câu trả lời.";
         aiText = aiText.replace(/[*_#~]/g, '');
 
-        const exitKeywords = ["tạm biệt", "tam biet", "cảm ơn", "cam on", "đủ rồi", "du roi", "bye", "nghỉ thôi", "dừng lại", "dung lai", "kết thúc", "ket thuc", "thôi nha", "thôi nhé"];
+        const exitKeywords = [
+          "từ từ", "tu tu", "chờ chút", "cho chut", "đợi chút", "doi chut", "khoan",
+          "dừng", "dừng lại", "dung lai", "tạm biệt", "tam biet", "cảm ơn", "cam on",
+          "đủ rồi", "du roi", "bye", "nghỉ thôi", "kết thúc", "ket thuc", "thôi nha", "thôi nhé"
+        ];
         const lowerUser = userText.toLowerCase();
         const isExit = exitKeywords.some(w => lowerUser.includes(w));
 
