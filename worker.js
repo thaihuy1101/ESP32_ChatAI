@@ -43,7 +43,8 @@ export default {
         formData.append("model", "whisper-large-v3-turbo"); 
         formData.append("language", "vi");
         formData.append("response_format", "json");
-        formData.append("prompt", "Hội thoại giao tiếp thông thường tiếng Việt hàng ngày.");
+        formData.append("temperature", "0");
+        formData.append("prompt", "Hội thoại hỏi đáp trực tiếp tiếng Việt đời thường, kiến thức khoa học, tuyệt đối không có quảng cáo YouTube.");
 
         const sttResponse = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
           method: "POST",
@@ -70,14 +71,15 @@ export default {
         // Lọc triệt để ảo giác (hallucination) thường gặp của Whisper khi âm thanh im lặng/nhiễu
         const lowerRaw = userText.toLowerCase();
         const whisperHallucinations = [
-          "đăng ký kênh", "đăng ký", "subscribe", "sub kênh", "like và sub",
+          "đăng ký kênh", "đăng kí kênh", "dang ky kenh", "subscribe", "sub kênh", "like và sub",
           "ủng hộ kênh", "hẹn gặp lại", "cảm ơn các bạn đã theo dõi",
           "chúc các bạn", "video sau", "mời các bạn đón xem", "kênh của mình",
-          "chia sẻ video", "hãy subscribe"
+          "chia sẻ video", "hãy subscribe", "like và chia sẻ", "bấm chuông",
+          "quý vị và các bạn", "chào mừng các bạn", "hẹn gặp lại quý vị", "đón xem video"
         ];
         const isHallucination = whisperHallucinations.some(h => lowerRaw.includes(h));
-        if (isHallucination && userText.length < 40) {
-          return new Response(JSON.stringify({ error: "Hallucination filtered" }), { status: 400 });
+        if (isHallucination) {
+          return new Response(JSON.stringify({ error: "Hallucination filtered", no_speech: true }), { status: 400 });
         }
 
         // Tự động lấy thời tiết và thông tin phòng
@@ -86,9 +88,10 @@ export default {
         const lastUserEnc = request.headers.get("X-Last-User");
         const lastAiEnc = request.headers.get("X-Last-AI");
         const msgList = [
-          { role: "system", content: `Bạn là trợ lý ảo AI thông minh, hiểu biết sâu rộng và thân thiện.
-QUY TẮC XƯNG HÔ BẮT BUỘC: Luôn xưng là "tôi" và gọi người dùng là "bạn" (tuyệt đối không xưng em, không gọi anh/chị).
-CÁCH TRẢ LỜI: Hãy trả lời tự nhiên, đầy đủ, thoải mái và giải thích rõ ràng giống như bạn bè đang trò chuyện và giải đáp kiến thức cho nhau. Không bị gò bó quá ngắn, giải thích đầy đủ các thông tin cần thiết nhưng tránh lan man. Tuyệt đối không dùng ký tự markdown như *, #, ~, gạch đầu dòng. ${weatherContext}` }
+          { role: "system", content: `Bạn là trợ lý AI thông minh, hiểu biết sâu rộng, thân thiện và gần gũi.
+QUY TẮC XƯNG HÔ BẮT BUỘC: Luôn luôn xưng là "tôi" và gọi người dùng là "bạn" (tuyệt đối không xưng em, không gọi anh/chị, không dùng dạ/thưa, không dùng câu hỏi rập khuôn như bạn cần gì/anh cần giúp gì).
+PHONG CÁCH TRẢ LỜI: Hãy trả lời tự nhiên, thoải mái, đầy đủ thông tin và sâu sắc như một người bạn tri thức đồng hành, sẵn sàng giải đáp và phân tích thông tin như tự tra cứu. Bạn không bị gò bó hay ép buộc phải trả lời ngắn ngủn, hãy thoải mái giải thích cặn kẽ các vấn đề khi được hỏi. Tuyệt đối không dùng ký tự markdown như *, #, ~, gạch đầu dòng.
+XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ ngữ về đăng ký kênh/YouTube do nhận diện nhầm, chỉ cần vui vẻ nói: "Tôi đang lắng nghe bạn đây, bạn hãy nói lại nhé." Tuyệt đối không nhắc lại chuyện đăng ký kênh. ${weatherContext}` }
         ];
         
         if (lastUserEnc && lastAiEnc) {
@@ -114,7 +117,7 @@ CÁCH TRẢ LỜI: Hãy trả lời tự nhiên, đầy đủ, thoải mái và 
             model: "qwen/qwen3.8-27b",
             messages: msgList,
             temperature: 0.7,
-            max_tokens: 600
+            max_tokens: 800
           })
         });
 
@@ -540,6 +543,46 @@ async function synthesizeAndStreamAudio(text, sendJSON, sendBinary, signal) {
 }
 
 async function fetchGoogleTTS(text, signal = null) {
+  const clean = text.trim();
+  if (clean.length <= 160) {
+    return await fetchSingleGoogleTTS(clean, signal);
+  }
+
+  // Chia nhỏ câu theo dấu chấm, phẩy hoặc khoảng trắng (<150 ký tự) để Google TTS không bao giờ bị lỗi 400
+  const chunks = [];
+  let remaining = clean;
+  while (remaining.length > 0) {
+    if (remaining.length <= 150) {
+      chunks.push(remaining);
+      break;
+    }
+    let splitIdx = remaining.lastIndexOf(".", 150);
+    if (splitIdx === -1) splitIdx = remaining.lastIndexOf(",", 150);
+    if (splitIdx === -1) splitIdx = remaining.lastIndexOf(" ", 150);
+    if (splitIdx === -1) splitIdx = 150;
+    else splitIdx += 1;
+
+    const part = remaining.slice(0, splitIdx).trim();
+    if (part) chunks.push(part);
+    remaining = remaining.slice(splitIdx).trim();
+  }
+
+  // Tải song song tất cả các đoạn MP3
+  const buffers = await Promise.all(chunks.map(c => fetchSingleGoogleTTS(c, signal)));
+
+  // Nối các khối MP3 nhị phân thành 1 file MP3 hoàn chỉnh duy nhất
+  let totalLength = 0;
+  for (const b of buffers) totalLength += b.byteLength;
+  const merged = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const b of buffers) {
+    merged.set(new Uint8Array(b), offset);
+    offset += b.byteLength;
+  }
+  return merged.buffer;
+}
+
+async function fetchSingleGoogleTTS(text, signal = null) {
   const encodedText = encodeURIComponent(text.trim());
   const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=${encodedText}`;
   const res = await fetch(ttsUrl, {
