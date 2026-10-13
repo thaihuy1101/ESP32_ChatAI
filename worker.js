@@ -444,14 +444,47 @@ function handleWebSocketSession(server, env, initialRequest) {
             // Bắn ngay kết quả STT về ESP32 để hiện lên màn hình TFT!
             sendJSON({ type: "stt", text: userText });
 
-            // Kiểm tra lệnh thoát
-            const exitKeywords = ["tạm biệt", "tam biet", "bye", "dừng lại", "dung lai", "kết thúc", "ket thuc", "thôi nha", "thôi nhé"];
-            const lowerUser = userText.toLowerCase();
+            const lowerUser = userText.toLowerCase().replace(/[.,!?]/g, '').trim();
+
+            // 1. Kiểm tra lệnh ngắt / dừng tạm thời (Barge-in / Pause)
+            const pauseKeywords = ["từ từ", "tu tu", "chờ chút", "cho chut", "đợi chút", "doi chut", "khoan", "chờ đã", "đợi đã", "im", "im lặng"];
+            const isPause = pauseKeywords.some(w => lowerUser === w || lowerUser.startsWith(w));
+
+            // 2. Kiểm tra lệnh thoát hoàn toàn
+            const exitKeywords = ["tạm biệt", "tam biet", "bye", "dừng lại", "dung lai", "kết thúc", "ket thuc", "thôi nha", "thôi nhé", "nghỉ thôi", "đủ rồi"];
             const isExit = exitKeywords.some(w => lowerUser.includes(w));
+
+            // 3. Kiểm tra từ khóa gọi đánh thức (Wake word)
+            const wakeKeywords = ["hey ai", "hello fen", "hello ai", "ai ơi", "bạn ơi", "fen ơi", "alo", "ê ai", "hey", "hello"];
+            const isOnlyWake = wakeKeywords.some(w => lowerUser === w);
+
+            // Xử lý phản hồi nhanh (Không cần tốn thời gian gọi LLM)
+            if (isPause) {
+              sendJSON({ type: "state", state: "speaking" });
+              await synthesizeAndStreamAudio("Vâng, tôi đang đợi bạn đây.", sendJSON, sendBinary, signal);
+              sendJSON({ type: "done", user_text: userText, ai_text: "Vâng, tôi đang đợi bạn đây.", exit: false });
+              return;
+            }
+
+            if (isExit) {
+              sendJSON({ type: "state", state: "speaking" });
+              await synthesizeAndStreamAudio("Tạm biệt bạn nhé, chúc bạn một ngày tốt lành!", sendJSON, sendBinary, signal);
+              sendJSON({ type: "done", user_text: userText, ai_text: "Tạm biệt bạn nhé!", exit: true });
+              return;
+            }
+
+            if (isOnlyWake) {
+              sendJSON({ type: "state", state: "speaking" });
+              await synthesizeAndStreamAudio("Tôi nghe đây, bạn cần tôi giúp gì nào?", sendJSON, sendBinary, signal);
+              sendJSON({ type: "done", user_text: userText, ai_text: "Tôi nghe đây, bạn cần tôi giúp gì nào?", exit: false });
+              return;
+            }
 
             // BƯỚC 2: STREAMING GROQ LLM (Qwen)
             let weatherContext = await getWeatherAndContext(initialRequest);
-            const systemPrompt = `Bạn là trợ lý ảo AI thông minh, vui vẻ và tự nhiên. Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 35 từ) để tương tác mượt mà trong thời gian thực. Không dùng ký tự markdown như *, #. ${roomContext}${weatherContext}`;
+            const systemPrompt = `Bạn là trợ lý ảo AI thông minh, vui vẻ và tự nhiên.
+QUY TẮC BẮT BUỘC: Luôn xưng "tôi" và gọi người dùng là "bạn". Tuyệt đối không dùng anh/chị hay dạ/thưa.
+Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 35 từ) để tương tác mượt mà trong thời gian thực. Không dùng ký tự markdown như *, #. ${roomContext}${weatherContext}`;
 
             const messages = [
               { role: "system", content: systemPrompt },
