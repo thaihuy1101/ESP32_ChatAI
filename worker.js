@@ -43,6 +43,7 @@ export default {
         formData.append("model", "whisper-large-v3-turbo"); 
         formData.append("language", "vi");
         formData.append("response_format", "json");
+        formData.append("prompt", "Hội thoại giao tiếp thông thường tiếng Việt hàng ngày.");
 
         const sttResponse = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
           method: "POST",
@@ -62,9 +63,22 @@ export default {
             throw new Error(`STT: ${shortError}`);
         }
         const sttData = await sttResponse.json();
-        const userText = sttData.text || "";
+        const userText = (sttData.text || "").trim();
 
-        if (!userText.trim()) return new Response(JSON.stringify({ error: "No speech" }), { status: 400 });
+        if (!userText) return new Response(JSON.stringify({ error: "No speech" }), { status: 400 });
+
+        // Lọc triệt để ảo giác (hallucination) thường gặp của Whisper khi âm thanh im lặng/nhiễu
+        const lowerRaw = userText.toLowerCase();
+        const whisperHallucinations = [
+          "đăng ký kênh", "đăng ký", "subscribe", "sub kênh", "like và sub",
+          "ủng hộ kênh", "hẹn gặp lại", "cảm ơn các bạn đã theo dõi",
+          "chúc các bạn", "video sau", "mời các bạn đón xem", "kênh của mình",
+          "chia sẻ video", "hãy subscribe"
+        ];
+        const isHallucination = whisperHallucinations.some(h => lowerRaw.includes(h));
+        if (isHallucination && userText.length < 40) {
+          return new Response(JSON.stringify({ error: "Hallucination filtered" }), { status: 400 });
+        }
 
         // Tự động lấy thời tiết và thông tin phòng
         let weatherContext = await getWeatherAndContext(request);
@@ -72,7 +86,9 @@ export default {
         const lastUserEnc = request.headers.get("X-Last-User");
         const lastAiEnc = request.headers.get("X-Last-AI");
         const msgList = [
-          { role: "system", content: `Bạn là trợ lý ảo thông minh. Hãy trả lời thân thiện, vui vẻ và tự nhiên. BẮT BUỘC trả lời NGẮN GỌN dưới 3-4 câu (dưới 40 từ) để không quá tải bộ nhớ thiết bị. Thi thoảng hãy đặt một câu hỏi ngược lại cho người dùng cuối câu để duy trì trò chuyện. ${weatherContext}` }
+          { role: "system", content: `Bạn là trợ lý ảo AI thông minh, hiểu biết sâu rộng và thân thiện.
+QUY TẮC XƯNG HÔ BẮT BUỘC: Luôn xưng là "tôi" và gọi người dùng là "bạn" (tuyệt đối không xưng em, không gọi anh/chị).
+CÁCH TRẢ LỜI: Hãy trả lời tự nhiên, đầy đủ, thoải mái và giải thích rõ ràng giống như bạn bè đang trò chuyện và giải đáp kiến thức cho nhau. Không bị gò bó quá ngắn, giải thích đầy đủ các thông tin cần thiết nhưng tránh lan man. Tuyệt đối không dùng ký tự markdown như *, #, ~, gạch đầu dòng. ${weatherContext}` }
         ];
         
         if (lastUserEnc && lastAiEnc) {
@@ -98,7 +114,7 @@ export default {
             model: "qwen/qwen3.8-27b",
             messages: msgList,
             temperature: 0.7,
-            max_tokens: 150
+            max_tokens: 600
           })
         });
 
