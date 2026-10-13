@@ -598,12 +598,13 @@ Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 35 từ
 
           } catch (err) {
             if (!signal.aborted) {
+              console.error("[WS Error]:", err.message);
               sendJSON({ type: "error", message: err.message });
+              sendJSON({ type: "state", state: "listening" });
             }
           } finally {
             isProcessing = false;
             abortController = null;
-            sendJSON({ type: "state", state: "idle" });
           }
         }
       } catch (err) {
