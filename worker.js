@@ -85,22 +85,27 @@ export default {
         // Tự động lấy thời tiết và thông tin phòng
         let weatherContext = await getWeatherAndContext(request);
 
-        // Kiểm tra yêu cầu mở nhạc / phát bài hát
-        const musicKeywords = ["mở bài", "bật bài", "phát bài", "nghe bài", "mở nhạc", "bật nhạc", "phát nhạc", "chơi bài", "hát bài", "bài hát", "play song"];
+        // Kiểm tra yêu cầu mở nhạc / phát bài hát / hát
+        const musicKeywords = [
+          "hát", "hát đi", "hát một bài", "hát bài", "ca một bài",
+          "mở bài", "bật bài", "phát bài", "nghe bài", "mở nhạc",
+          "bật nhạc", "phát nhạc", "chơi bài", "chơi nhạc", "bài hát",
+          "nghe nhạc", "play", "music", "song"
+        ];
         const lowerUser = userText.toLowerCase();
         const isMusic = musicKeywords.some(w => lowerUser.includes(w));
         let musicUrl = "";
 
         if (isMusic) {
+          let streamType = "vpop";
           if (lowerUser.includes("lofi") || lowerUser.includes("chill") || lowerUser.includes("thư giãn") || lowerUser.includes("ngủ")) {
-            musicUrl = "https://stream.zeno.fm/f3wvbbqmdg8uv"; // Lofi Chill
+            streamType = "lofi";
           } else if (lowerUser.includes("piano") || lowerUser.includes("không lời")) {
-            musicUrl = "https://streams.ilovemusic.de/iloveradio26.mp3"; // Piano Relax
+            streamType = "piano";
           } else if (lowerUser.includes("dance") || lowerUser.includes("edm") || lowerUser.includes("sôi động") || lowerUser.includes("tiếng anh")) {
-            musicUrl = "https://streams.ilovemusic.de/iloveradio17.mp3"; // Dance / EDM
-          } else {
-            musicUrl = "https://stream.zeno.fm/0r0xa792kwzuv"; // V-Pop Hits / Acoustic
+            streamType = "dance";
           }
+          musicUrl = `${url.origin}/music?type=${streamType}`;
         }
 
         const lastUserEnc = request.headers.get("X-Last-User");
@@ -276,7 +281,31 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
     }
 
     // --------------------------------------------------------------------------
-    // CỔNG 4: TEST & STATUS
+    // CỔNG 4: HTTP GET /music - PROXY STREAM NHẠC MP3 TRỰC TIẾP CHO ESP32
+    // --------------------------------------------------------------------------
+    if (request.method === "GET" && url.pathname === "/music") {
+      const type = url.searchParams.get("type") || "vpop";
+      let target = "https://stream.zeno.fm/0r0xa792kwzuv";
+      if (type === "lofi") target = "https://stream.zeno.fm/f3wvbbqmdg8uv";
+      else if (type === "piano") target = "https://streams.ilovemusic.de/iloveradio26.mp3";
+      else if (type === "dance") target = "https://streams.ilovemusic.de/iloveradio17.mp3";
+
+      const streamRes = await fetch(target, {
+        headers: { "User-Agent": "ESP8266Audio" }
+      });
+
+      return new Response(streamRes.body, {
+        status: 200,
+        headers: {
+          "Content-Type": "audio/mpeg",
+          "Cache-Control": "no-cache",
+          "Access-Control-Allow-Origin": "*"
+        }
+      });
+    }
+
+    // --------------------------------------------------------------------------
+    // CỔNG 5: TEST & STATUS
     // --------------------------------------------------------------------------
     if (request.method === "GET" && url.pathname === "/test_chat") {
       return new Response("ESP32 AI Backend & WebSocket /ws is ready!", { status: 200 });
