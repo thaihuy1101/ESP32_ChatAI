@@ -446,6 +446,23 @@ function handleWebSocketSession(server, env, initialRequest) {
 
             const lowerUser = userText.toLowerCase().replace(/[.,!?]/g, '').trim();
 
+            // Lọc triệt để ảo giác (hallucination) của Whisper khi âm thanh bị nhiễu / tiếng quạt
+            const whisperHallucinations = [
+              "đăng ký kênh", "đăng kí kênh", "dang ky kenh", "subscribe", "sub kênh", "like và sub",
+              "ủng hộ kênh", "hẹn gặp lại", "cảm ơn các bạn đã theo dõi",
+              "chúc các bạn", "video sau", "mời các bạn đón xem", "kênh của mình",
+              "chia sẻ video", "hãy subscribe", "like và chia sẻ", "bấm chuông",
+              "quý vị và các bạn", "chào mừng các bạn", "hẹn gặp lại quý vị", "đón xem video",
+              "ghiền mì gõ", "ghien mi go"
+            ];
+            const isHallucination = whisperHallucinations.some(h => lowerUser.includes(h));
+            if (isHallucination) {
+              console.log("[Worker WS] Loc bo ao giac Whisper:", userText);
+              sendJSON({ type: "state", state: "listening" });
+              isProcessing = false;
+              return;
+            }
+
             // 1. Kiểm tra lệnh ngắt / dừng tạm thời (Barge-in / Pause)
             const pauseKeywords = ["từ từ", "tu tu", "chờ chút", "cho chut", "đợi chút", "doi chut", "khoan", "chờ đã", "đợi đã", "im", "im lặng"];
             const isPause = pauseKeywords.some(w => lowerUser === w || lowerUser.startsWith(w));
