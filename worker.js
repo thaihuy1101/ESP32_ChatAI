@@ -85,12 +85,30 @@ export default {
         // Tự động lấy thời tiết và thông tin phòng
         let weatherContext = await getWeatherAndContext(request);
 
+        // Kiểm tra yêu cầu mở nhạc / phát bài hát
+        const musicKeywords = ["mở bài", "bật bài", "phát bài", "nghe bài", "mở nhạc", "bật nhạc", "phát nhạc", "chơi bài", "hát bài", "bài hát", "play song"];
+        const lowerUser = userText.toLowerCase();
+        const isMusic = musicKeywords.some(w => lowerUser.includes(w));
+        let musicUrl = "";
+
+        if (isMusic) {
+          if (lowerUser.includes("lofi") || lowerUser.includes("chill") || lowerUser.includes("thư giãn") || lowerUser.includes("ngủ")) {
+            musicUrl = "https://stream.zeno.fm/f3wvbbqmdg8uv"; // Lofi Chill
+          } else if (lowerUser.includes("piano") || lowerUser.includes("không lời")) {
+            musicUrl = "https://streams.ilovemusic.de/iloveradio26.mp3"; // Piano Relax
+          } else if (lowerUser.includes("dance") || lowerUser.includes("edm") || lowerUser.includes("sôi động") || lowerUser.includes("tiếng anh")) {
+            musicUrl = "https://streams.ilovemusic.de/iloveradio17.mp3"; // Dance / EDM
+          } else {
+            musicUrl = "https://stream.zeno.fm/0r0xa792kwzuv"; // V-Pop Hits / Acoustic
+          }
+        }
+
         const lastUserEnc = request.headers.get("X-Last-User");
         const lastAiEnc = request.headers.get("X-Last-AI");
         const msgList = [
           { role: "system", content: `Bạn là trợ lý AI thông minh, hiểu biết sâu rộng, thân thiện và gần gũi.
 QUY TẮC XƯNG HÔ BẮT BUỘC: Luôn luôn xưng là "tôi" và gọi người dùng là "bạn" (tuyệt đối không xưng em, không gọi anh/chị, không dùng dạ/thưa, không dùng câu hỏi rập khuôn như bạn cần gì/anh cần giúp gì).
-PHONG CÁCH TRẢ LỜI: Hãy trả lời tự nhiên, thoải mái, đầy đủ thông tin và sâu sắc như một người bạn tri thức đồng hành, sẵn sàng giải đáp và phân tích thông tin như tự tra cứu. Bạn không bị gò bó hay ép buộc phải trả lời ngắn ngủn, hãy thoải mái giải thích cặn kẽ các vấn đề khi được hỏi. Tuyệt đối không dùng ký tự markdown như *, #, ~, gạch đầu dòng.
+PHONG CÁCH TRẢ LỜI: Hãy trả lời tự nhiên, thân thiện và súc tích (khoảng 2 đến 3 câu, dưới 60 từ) phù hợp với đàm thoại giọng nói qua loa thông minh. Đầy đủ ý, nói thẳng vào trọng tâm câu hỏi của người dùng. Tuyệt đối không dùng ký tự markdown như *, #, ~, gạch đầu dòng.
 XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ ngữ về đăng ký kênh/YouTube do nhận diện nhầm, chỉ cần vui vẻ nói: "Tôi đang lắng nghe bạn đây, bạn hãy nói lại nhé." Tuyệt đối không nhắc lại chuyện đăng ký kênh. ${weatherContext}` }
         ];
         
@@ -117,7 +135,7 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
             model: "qwen/qwen3.8-27b",
             messages: msgList,
             temperature: 0.7,
-            max_tokens: 800
+            max_tokens: 160
           })
         });
 
@@ -125,7 +143,7 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
 
         const llmData = await llmResponse.json();
         let aiText = llmData.choices[0].message.content.trim();
-        if (!aiText) aiText = "Tôi không có câu trả lời.";
+        if (!aiText) aiText = isMusic ? "Tôi đang mở nhạc cho bạn đây, chúc bạn nghe vui vẻ!" : "Tôi không có câu trả lời.";
         aiText = aiText.replace(/[*_#~]/g, '');
 
         const exitKeywords = [
@@ -133,7 +151,6 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
           "dừng", "dừng lại", "dung lai", "tạm biệt", "tam biet", "cảm ơn", "cam on",
           "đủ rồi", "du roi", "bye", "nghỉ thôi", "kết thúc", "ket thuc", "thôi nha", "thôi nhé"
         ];
-        const lowerUser = userText.toLowerCase();
         const isExit = exitKeywords.some(w => lowerUser.includes(w));
 
         // Nhận diện cảm xúc cho 2 mắt robot
@@ -145,7 +162,7 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
             emotion = "surprised";
         } else if (lowerAi.includes("suy nghĩ") || lowerAi.includes("để xem") || lowerAi.includes("chờ chút")) {
             emotion = "thinking";
-        } else if (lowerAi.includes("vui") || lowerAi.includes("tuyệt") || lowerAi.includes("haha") || lowerAi.includes("thích") || lowerAi.includes("chúc") || lowerAi.includes("sẵn sàng") || lowerAi.includes("chào") || isExit) {
+        } else if (lowerAi.includes("vui") || lowerAi.includes("tuyệt") || lowerAi.includes("haha") || lowerAi.includes("thích") || lowerAi.includes("chúc") || lowerAi.includes("sẵn sàng") || lowerAi.includes("chào") || isExit || isMusic) {
             emotion = "happy";
         } else {
             emotion = "speaking";
@@ -157,6 +174,7 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
           user_text: userText,
           ai_text: aiText,
           emotion: emotion,
+          music_url: musicUrl,
           exit: isExit
         }), {
           headers: { "Content-Type": "application/json" }
