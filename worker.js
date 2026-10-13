@@ -113,11 +113,27 @@ export default {
         const lowerUser = userText.toLowerCase();
         const isExit = exitKeywords.some(w => lowerUser.includes(w));
 
+        // Nhận diện cảm xúc cho 2 mắt robot
+        let emotion = "happy";
+        const lowerAi = aiText.toLowerCase();
+        if (lowerAi.includes("buồn") || lowerAi.includes("tiếc") || lowerAi.includes("xin lỗi") || lowerAi.includes("khó")) {
+            emotion = "sad";
+        } else if (lowerAi.includes("ồ") || lowerAi.includes("wow") || lowerAi.includes("thật sao") || lowerAi.includes("bất ngờ")) {
+            emotion = "surprised";
+        } else if (lowerAi.includes("suy nghĩ") || lowerAi.includes("để xem") || lowerAi.includes("chờ chút")) {
+            emotion = "thinking";
+        } else if (lowerAi.includes("vui") || lowerAi.includes("tuyệt") || lowerAi.includes("haha") || lowerAi.includes("thích") || lowerAi.includes("chúc") || lowerAi.includes("sẵn sàng") || lowerAi.includes("chào") || isExit) {
+            emotion = "happy";
+        } else {
+            emotion = "speaking";
+        }
+
         return new Response(JSON.stringify({
           user: userText,
           text: aiText,
           user_text: userText,
           ai_text: aiText,
+          emotion: emotion,
           exit: isExit
         }), {
           headers: { "Content-Type": "application/json" }
