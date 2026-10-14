@@ -123,7 +123,7 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            model: "qwen/qwen3.8-27b",
+            model: "llama-3.3-70b-versatile",
             messages: msgList,
             temperature: 0.7,
             max_tokens: 160
@@ -307,9 +307,10 @@ function handleWebSocketSession(server, env, initialRequest) {
         // E. KẾT THÚC GIỌNG NÓI (STOP / LISTEN: STOP / AUDIO_END)
         if (msg.type === "audio_end" || msg.type === "stop" || (msg.type === "listen" && msg.state === "stop")) {
           if (isProcessing) return;
-          if (audioChunks.length === 0) {
-            sendJSON({ type: "state", state: "idle" });
-            if (isXiaozhiClient) sendJSON({ type: "tts", state: "stop" });
+          // Kiểm tra nếu đoạn âm thanh quá ngắn (dưới 0.5s - thường chỉ là tiếng chạm hoặc tiếng thở nhẹ)
+          if (audioChunks.length < 8) {
+            audioChunks = [];
+            sendJSON({ type: "state", state: "listening" });
             return;
           }
 
@@ -348,6 +349,8 @@ function handleWebSocketSession(server, env, initialRequest) {
             formData.append("model", "whisper-large-v3-turbo");
             formData.append("language", "vi");
             formData.append("response_format", "json");
+            formData.append("temperature", "0");
+            formData.append("prompt", "Hội thoại hỏi đáp trực tiếp tiếng Việt, giao tiếp trợ lý ảo đời thường, tuyệt đối không có quảng cáo YouTube.");
 
             const sttRes = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
               method: "POST",
@@ -361,31 +364,32 @@ function handleWebSocketSession(server, env, initialRequest) {
             const userText = (sttData.text || "").trim();
 
             if (!userText || signal.aborted) {
-              sendJSON({ type: "state", state: "idle" });
-              if (isXiaozhiClient) sendJSON({ type: "tts", state: "stop" });
-              isProcessing = false;
-              return;
-            }
-
-            // Bắn ngay kết quả STT về ESP32 hiển thị lên màn hình
-            sendJSON({ type: "stt", text: userText });
-
-            const lowerUser = userText.toLowerCase().replace(/[.,!?]/g, '').trim();
-
-            // Lọc ảo giác Whisper
-            const whisperHallucinations = [
-              "đăng ký kênh", "đăng kí kênh", "dang ky kenh", "subscribe", "sub kênh", "like và sub",
-              "ủng hộ kênh", "hẹn gặp lại", "cảm ơn các bạn đã theo dõi",
-              "chúc các bạn", "video sau", "mời các bạn đón xem", "kênh của mình",
-              "chia sẻ video", "hãy subscribe", "like và chia sẻ", "bấm chuông",
-              "quý vị và các bạn", "chào mừng các bạn", "hẹn gặp lại quý vị", "đón xem video",
-              "ghiền mì gõ", "ghien mi go"
-            ];
-            if (whisperHallucinations.some(h => lowerUser.includes(h))) {
               sendJSON({ type: "state", state: "listening" });
               isProcessing = false;
               return;
             }
+
+            const lowerUser = userText.toLowerCase().replace(/[.,!?]/g, '').trim();
+
+            // Lọc ảo giác Whisper TRƯỚC KHI gửi kết quả STT về màn hình
+            const whisperHallucinations = [
+              "đăng ký kênh", "đăng kí kênh", "dang ky kenh", "subscribe", "sub kênh", "like và sub",
+              "ủng hộ kênh", "hẹn gặp lại", "cảm ơn các bạn đã theo dõi", "cảm ơn đã theo dõi",
+              "chúc các bạn", "video sau", "mời các bạn đón xem", "kênh của mình",
+              "chia sẻ video", "hãy subscribe", "like và chia sẻ", "bấm chuông",
+              "quý vị và các bạn", "chào mừng các bạn", "hẹn gặp lại quý vị", "đón xem video",
+              "ghiền mì gõ", "ghien mi go", "tạm biệt và hẹn gặp lại", "hẹn gặp lại các bạn",
+              "chúc bạn một ngày tốt lành", "hẹn gặp lại ở video sau"
+            ];
+            if (whisperHallucinations.some(h => lowerUser.includes(h))) {
+              console.log("[Whisper Hallucination Filtered]:", userText);
+              sendJSON({ type: "state", state: "listening" });
+              isProcessing = false;
+              return;
+            }
+
+            // Bắn kết quả STT về ESP32 hiển thị lên màn hình KHI ĐÃ XÁC NHẬN KHÔNG PHẢI ẢO GIÁC
+            sendJSON({ type: "stt", text: userText });
 
             // Kiểm tra câu dừng / tạm biệt
             const exitKeywords = ["tạm biệt", "tam biet", "bye", "dừng lại", "dung lai", "kết thúc", "ket thuc", "thôi nha", "thôi nhé", "nghỉ thôi", "đủ rồi"];
@@ -414,7 +418,7 @@ Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 45 từ
                 "Content-Type": "application/json"
               },
               body: JSON.stringify({
-                model: "qwen/qwen3.8-27b",
+                model: "llama-3.3-70b-versatile",
                 messages: messages,
                 temperature: 0.7,
                 max_tokens: 140,
