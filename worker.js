@@ -489,6 +489,9 @@ Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 45 từ
               ai_text: accumulatedAiText.trim(),
               exit: isExit
             });
+            if (isExit) {
+              sendJSON({ type: "goodbye" });
+            }
 
           } catch (err) {
             if (!signal.aborted) {
