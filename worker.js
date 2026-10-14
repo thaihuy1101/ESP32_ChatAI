@@ -230,6 +230,8 @@ function handleWebSocketSession(server, env, initialRequest) {
   let conversationHistory = [];
   let isXiaozhiClient = false;
   let sessionId = "session_" + Date.now();
+  let silenceTimer = null;
+  let hasVoiceActivity = false;
 
   const sendJSON = (obj) => {
     try {
@@ -243,82 +245,27 @@ function handleWebSocketSession(server, env, initialRequest) {
     } catch (e) {}
   };
 
-  server.addEventListener("message", async (event) => {
-    // 1. DỮ LIỆU NHỊ PHÂN: AUDIO PACKETS TỪ MICRO (OPUS HOẶC PCM)
-    if (event.data instanceof ArrayBuffer) {
-      if (event.data.byteLength > 0) {
-        audioChunks.push(new Uint8Array(event.data));
-      }
+  const finishAndProcessAudio = async () => {
+    if (isProcessing) return;
+    if (silenceTimer) {
+      clearTimeout(silenceTimer);
+      silenceTimer = null;
+    }
+
+    // Kiểm tra nếu đoạn âm thanh quá ngắn (dưới 8 gói ~ 0.5s)
+    if (audioChunks.length < 8) {
+      audioChunks = [];
+      hasVoiceActivity = false;
+      sendJSON({ type: "state", state: "listening" });
       return;
     }
 
-    // 2. DỮ LIỆU TEXT / JSON CONTROL PACKETS
-    if (typeof event.data === "string") {
-      try {
-        const msg = JSON.parse(event.data);
+    isProcessing = true;
+    hasVoiceActivity = false;
+    abortController = new AbortController();
+    const signal = abortController.signal;
 
-        // A. BẮT TAY GIAO THỨC XIAOZHI (HELLO)
-        if (msg.type === "hello") {
-          isXiaozhiClient = true;
-          if (msg.session_id) sessionId = msg.session_id;
-
-          sendJSON({
-            type: "hello",
-            transport: "websocket",
-            session_id: sessionId,
-            audio_params: {
-              format: "opus",
-              sample_rate: 16000,
-              channels: 1,
-              frame_duration: 60
-            }
-          });
-          return;
-        }
-
-        // B. KEEP-ALIVE PING
-        if (msg.type === "ping") {
-          sendJSON({ type: "pong", ts: Date.now() });
-          return;
-        }
-
-        // C. BẮT ĐẦU LƯỢT NÓI (START / LISTEN: START)
-        if (msg.type === "start" || (msg.type === "listen" && msg.state === "start")) {
-          audioChunks = [];
-          sendJSON({ type: "state", state: "listening" });
-          return;
-        }
-
-        // D. LỆNH CẮT NGANG (BARGE-IN / ABORT)
-        if (msg.type === "abort") {
-          if (abortController) {
-            abortController.abort();
-            abortController = null;
-          }
-          audioChunks = [];
-          isProcessing = false;
-          sendJSON({ type: "state", state: "idle", interrupted: true });
-          if (isXiaozhiClient) {
-            sendJSON({ type: "tts", state: "stop" });
-          }
-          return;
-        }
-
-        // E. KẾT THÚC GIỌNG NÓI (STOP / LISTEN: STOP / AUDIO_END)
-        if (msg.type === "audio_end" || msg.type === "stop" || (msg.type === "listen" && msg.state === "stop")) {
-          if (isProcessing) return;
-          // Kiểm tra nếu đoạn âm thanh quá ngắn (dưới 0.5s - thường chỉ là tiếng chạm hoặc tiếng thở nhẹ)
-          if (audioChunks.length < 8) {
-            audioChunks = [];
-            sendJSON({ type: "state", state: "listening" });
-            return;
-          }
-
-          isProcessing = true;
-          abortController = new AbortController();
-          const signal = abortController.signal;
-
-          sendJSON({ type: "state", state: "thinking" });
+    sendJSON({ type: "state", state: "thinking" });
 
           try {
             // Chuẩn bị file Audio gửi tới Groq Whisper
@@ -570,7 +517,101 @@ Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 45 từ
           } finally {
             isProcessing = false;
             abortController = null;
+            hasVoiceActivity = false;
           }
+  };
+
+  server.addEventListener("message", async (event) => {
+    // 1. DỮ LIỆU NHỊ PHÂN: AUDIO PACKETS TỪ MICRO (OPUS HOẶC PCM)
+    if (event.data instanceof ArrayBuffer) {
+      if (isProcessing) return;
+      if (event.data.byteLength > 0) {
+        audioChunks.push(new Uint8Array(event.data));
+
+        // Phát hiện tiếng nói nếu gói Opus có dung lượng > 20 byte
+        if (event.data.byteLength > 20) {
+          hasVoiceActivity = true;
+        }
+
+        // Tự động nhận diện khi người dùng nói xong (Auto-VAD: 1.1s im lặng sau khi có tiếng nói)
+        if (hasVoiceActivity && audioChunks.length >= 10) {
+          if (silenceTimer) clearTimeout(silenceTimer);
+          silenceTimer = setTimeout(() => {
+            console.log("[Auto-VAD]: User paused speaking, processing...");
+            finishAndProcessAudio();
+          }, 1100);
+        }
+
+        // Giới hạn an toàn tối đa 10 giây nói liên tục (~160 gói * 60ms)
+        if (audioChunks.length >= 160) {
+          if (silenceTimer) clearTimeout(silenceTimer);
+          console.log("[Auto-VAD]: Max recording limit reached, processing...");
+          finishAndProcessAudio();
+        }
+      }
+      return;
+    }
+
+    // 2. DỮ LIỆU TEXT / JSON CONTROL PACKETS
+    if (typeof event.data === "string") {
+      try {
+        const msg = JSON.parse(event.data);
+
+        // A. BẮT TAY GIAO THỨC XIAOZHI (HELLO)
+        if (msg.type === "hello") {
+          isXiaozhiClient = true;
+          if (msg.session_id) sessionId = msg.session_id;
+
+          sendJSON({
+            type: "hello",
+            transport: "websocket",
+            session_id: sessionId,
+            audio_params: {
+              format: "opus",
+              sample_rate: 16000,
+              channels: 1,
+              frame_duration: 60
+            }
+          });
+          return;
+        }
+
+        // B. KEEP-ALIVE PING
+        if (msg.type === "ping") {
+          sendJSON({ type: "pong", ts: Date.now() });
+          return;
+        }
+
+        // C. BẮT ĐẦU LƯỢT NÓI (START / LISTEN: START)
+        if (msg.type === "start" || (msg.type === "listen" && msg.state === "start")) {
+          if (silenceTimer) clearTimeout(silenceTimer);
+          audioChunks = [];
+          hasVoiceActivity = false;
+          sendJSON({ type: "state", state: "listening" });
+          return;
+        }
+
+        // D. LỆNH CẮT NGANG (BARGE-IN / ABORT)
+        if (msg.type === "abort") {
+          if (silenceTimer) clearTimeout(silenceTimer);
+          if (abortController) {
+            abortController.abort();
+            abortController = null;
+          }
+          audioChunks = [];
+          hasVoiceActivity = false;
+          isProcessing = false;
+          sendJSON({ type: "state", state: "idle", interrupted: true });
+          if (isXiaozhiClient) {
+            sendJSON({ type: "tts", state: "stop" });
+          }
+          return;
+        }
+
+        // E. KẾT THÚC GIỌNG NÓI (STOP / LISTEN: STOP / AUDIO_END)
+        if (msg.type === "audio_end" || msg.type === "stop" || (msg.type === "listen" && msg.state === "stop")) {
+          finishAndProcessAudio();
+          return;
         }
       } catch (err) {
         sendJSON({ type: "error", message: "Invalid JSON control packet" });
@@ -579,11 +620,13 @@ Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 45 từ
   });
 
   server.addEventListener("close", () => {
+    if (silenceTimer) clearTimeout(silenceTimer);
     if (abortController) abortController.abort();
     audioChunks = [];
   });
 
   server.addEventListener("error", () => {
+    if (silenceTimer) clearTimeout(silenceTimer);
     if (abortController) abortController.abort();
   });
 }
