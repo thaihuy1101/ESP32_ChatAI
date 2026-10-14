@@ -123,7 +123,7 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            model: "llama-3.3-70b-versatile",
+            model: "qwen/qwen3.8-27b",
             messages: msgList,
             temperature: 0.7,
             max_tokens: 160
@@ -428,7 +428,7 @@ Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 45 từ
                 "Content-Type": "application/json"
               },
               body: JSON.stringify({
-                model: "llama-3.3-70b-versatile",
+                model: "qwen/qwen3.8-27b",
                 messages: messages,
                 temperature: 0.7,
                 max_tokens: 140,
