@@ -391,6 +391,69 @@ function handleWebSocketSession(server, env, initialRequest) {
             // Bắn kết quả STT về ESP32 hiển thị lên màn hình KHI ĐÃ XÁC NHẬN KHÔNG PHẢI ẢO GIÁC
             sendJSON({ type: "stt", text: userText });
 
+            // Kiểm tra lệnh tắt nhạc / dừng nhạc
+            const stopMusicKeywords = ["tắt nhạc", "tat nhac", "dừng nhạc", "dung nhac", "ngừng nhạc", "ngung nhac"];
+            const isStopMusic = stopMusicKeywords.some(w => lowerUser.includes(w));
+
+            if (isStopMusic) {
+              sendJSON({ type: "music", action: "stop" });
+              sendJSON({ type: "tts", state: "start" });
+              sendJSON({ type: "state", state: "speaking" });
+              await speakSentence("Tôi đã tắt nhạc rồi bạn nhé.", sendJSON, sendBinary, isXiaozhiClient, signal);
+              sendJSON({ type: "tts", state: "stop" });
+              sendJSON({ type: "state", state: "listening" });
+              isProcessing = false;
+              return;
+            }
+
+            // Kiểm tra yêu cầu mở nhạc
+            const musicKeywords = [
+              "hát", "hát đi", "hát một bài", "hát bài", "ca một bài",
+              "mở bài", "bật bài", "phát bài", "nghe bài", "mở nhạc",
+              "bật nhạc", "phát nhạc", "chơi bài", "chơi nhạc", "bài hát",
+              "nghe nhạc", "play", "music", "song"
+            ];
+            const isMusic = musicKeywords.some(w => lowerUser.includes(w));
+
+            if (isMusic) {
+              let musicTitle = "Nhạc Trẻ V-Pop";
+              let musicUrl = "https://stream.zeno.fm/0r0xa792kwzuv";
+
+              if (lowerUser.includes("lofi") || lowerUser.includes("chill") || lowerUser.includes("thư giãn") || lowerUser.includes("ngủ")) {
+                musicTitle = "Nhạc Lofi Chill";
+                musicUrl = "https://stream.zeno.fm/f3wvbbqmdg8uv";
+              } else if (lowerUser.includes("piano") || lowerUser.includes("không lời") || lowerUser.includes("giao hưởng")) {
+                musicTitle = "Nhạc Piano Thư Giãn";
+                musicUrl = "https://streams.ilovemusic.de/iloveradio26.mp3";
+              } else if (lowerUser.includes("dance") || lowerUser.includes("edm") || lowerUser.includes("sôi động") || lowerUser.includes("tiếng anh")) {
+                musicTitle = "Nhạc EDM Sôi Động";
+                musicUrl = "https://streams.ilovemusic.de/iloveradio17.mp3";
+              }
+
+              const confirmText = `Tôi đang mở ${musicTitle.toLowerCase()} cho bạn đây, chúc bạn nghe nhạc vui vẻ nhé!`;
+              sendJSON({ type: "tts", state: "start" });
+              sendJSON({ type: "state", state: "speaking" });
+              await speakSentence(confirmText, sendJSON, sendBinary, isXiaozhiClient, signal);
+              sendJSON({ type: "tts", state: "stop" });
+
+              // Phát tín hiệu mở nhạc đến ESP32
+              sendJSON({
+                type: "music",
+                action: "play",
+                title: musicTitle,
+                url: musicUrl
+              });
+
+              sendJSON({
+                type: "done",
+                user_text: userText,
+                ai_text: confirmText,
+                exit: false
+              });
+              isProcessing = false;
+              return;
+            }
+
             // Kiểm tra câu dừng / tạm biệt
             const exitKeywords = ["tạm biệt", "tam biet", "bye", "dừng lại", "dung lai", "kết thúc", "ket thuc", "thôi nha", "thôi nhé", "nghỉ thôi", "đủ rồi"];
             const isExit = exitKeywords.some(w => lowerUser.includes(w));
