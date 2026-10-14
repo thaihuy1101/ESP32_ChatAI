@@ -1,8 +1,9 @@
 // ==============================================================================
-// CLOUDFLARE WORKER: ESP32-S3 FULL-DUPLEX AI (XIAOZHI STYLE) & HTTP REST BACKEND
-// Hỗ trợ cả 2 chế độ:
-// 1. WebSocket /ws: Full-Duplex Real-Time Streaming + Voice Barge-in (Cắt ngang)
-// 2. HTTP /chat & /tts: Chế độ truyền thống (Tương thích ngược 100%)
+// CLOUDFLARE WORKER: ESP32-S3 FULL-DUPLEX AI (XIAOZHI & REST SUPPORT)
+// TTS CHÍNH: Microsoft Edge Neural TTS - Giọng HOÀI MY (vi-VN-HoaiMyNeural)
+// Hỗ trợ:
+// 1. WebSocket /ws: Giao thức Xiaozhi (hello, listen, stt, tts) + Voice Barge-in
+// 2. HTTP /chat, /tts, /music, /test_chat: Tương thích ngược toàn diện
 // ==============================================================================
 
 export default {
@@ -68,24 +69,22 @@ export default {
 
         if (!userText) return new Response(JSON.stringify({ error: "No speech" }), { status: 400 });
 
-        // Lọc triệt để ảo giác (hallucination) thường gặp của Whisper khi âm thanh im lặng/nhiễu
+        // Lọc ảo giác Whisper
         const lowerRaw = userText.toLowerCase();
         const whisperHallucinations = [
           "đăng ký kênh", "đăng kí kênh", "dang ky kenh", "subscribe", "sub kênh", "like và sub",
           "ủng hộ kênh", "hẹn gặp lại", "cảm ơn các bạn đã theo dõi",
           "chúc các bạn", "video sau", "mời các bạn đón xem", "kênh của mình",
           "chia sẻ video", "hãy subscribe", "like và chia sẻ", "bấm chuông",
-          "quý vị và các bạn", "chào mừng các bạn", "hẹn gặp lại quý vị", "đón xem video"
+          "quý vị và các bạn", "chào mừng các bạn", "hẹn gặp lại quý vị", "đón xem video",
+          "ghiền mì gõ", "ghien mi go"
         ];
-        const isHallucination = whisperHallucinations.some(h => lowerRaw.includes(h));
-        if (isHallucination) {
+        if (whisperHallucinations.some(h => lowerRaw.includes(h))) {
           return new Response(JSON.stringify({ error: "Hallucination filtered", no_speech: true }), { status: 400 });
         }
 
-        // Tự động lấy thời tiết và thông tin phòng
         let weatherContext = await getWeatherAndContext(request);
 
-        // Kiểm tra yêu cầu mở nhạc / phát bài hát / hát
         const musicKeywords = [
           "hát", "hát đi", "hát một bài", "hát bài", "ca một bài",
           "mở bài", "bật bài", "phát bài", "nghe bài", "mở nhạc",
@@ -108,27 +107,13 @@ export default {
           musicUrl = `${url.origin}/music?type=${streamType}`;
         }
 
-        const lastUserEnc = request.headers.get("X-Last-User");
-        const lastAiEnc = request.headers.get("X-Last-AI");
         const msgList = [
           { role: "system", content: `Bạn là trợ lý AI thông minh, hiểu biết sâu rộng, thân thiện và gần gũi.
 QUY TẮC XƯNG HÔ BẮT BUỘC: Luôn luôn xưng là "tôi" và gọi người dùng là "bạn" (tuyệt đối không xưng em, không gọi anh/chị, không dùng dạ/thưa, không dùng câu hỏi rập khuôn như bạn cần gì/anh cần giúp gì).
 PHONG CÁCH TRẢ LỜI: Hãy trả lời tự nhiên, thân thiện và súc tích (khoảng 2 đến 3 câu, dưới 60 từ) phù hợp với đàm thoại giọng nói qua loa thông minh. Đầy đủ ý, nói thẳng vào trọng tâm câu hỏi của người dùng. Tuyệt đối không dùng ký tự markdown như *, #, ~, gạch đầu dòng.
-XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ ngữ về đăng ký kênh/YouTube do nhận diện nhầm, chỉ cần vui vẻ nói: "Tôi đang lắng nghe bạn đây, bạn hãy nói lại nhé." Tuyệt đối không nhắc lại chuyện đăng ký kênh. ${weatherContext}` }
+XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ ngữ về đăng ký kênh/YouTube do nhận diện nhầm, chỉ cần vui vẻ nói: "Tôi đang lắng nghe bạn đây, bạn hãy nói lại nhé." Tuyệt đối không nhắc lại chuyện đăng ký kênh. ${weatherContext}` },
+          { role: "user", content: userText }
         ];
-        
-        if (lastUserEnc && lastAiEnc) {
-            try {
-                const lastUser = decodeURIComponent(lastUserEnc.replace(/\+/g, ' '));
-                const lastAi = decodeURIComponent(lastAiEnc.replace(/\+/g, ' '));
-                if (lastUser.length > 0 && lastAi.length > 0) {
-                    msgList.push({ role: "user", content: lastUser });
-                    msgList.push({ role: "assistant", content: lastAi });
-                }
-            } catch(e) {}
-        }
-        
-        msgList.push({ role: "user", content: userText });
 
         const llmResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
           method: "POST",
@@ -158,27 +143,12 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
         ];
         const isExit = exitKeywords.some(w => lowerUser.includes(w));
 
-        // Nhận diện cảm xúc cho 2 mắt robot
-        let emotion = "happy";
-        const lowerAi = aiText.toLowerCase();
-        if (lowerAi.includes("buồn") || lowerAi.includes("tiếc") || lowerAi.includes("xin lỗi") || lowerAi.includes("khó")) {
-            emotion = "sad";
-        } else if (lowerAi.includes("ồ") || lowerAi.includes("wow") || lowerAi.includes("thật sao") || lowerAi.includes("bất ngờ")) {
-            emotion = "surprised";
-        } else if (lowerAi.includes("suy nghĩ") || lowerAi.includes("để xem") || lowerAi.includes("chờ chút")) {
-            emotion = "thinking";
-        } else if (lowerAi.includes("vui") || lowerAi.includes("tuyệt") || lowerAi.includes("haha") || lowerAi.includes("thích") || lowerAi.includes("chúc") || lowerAi.includes("sẵn sàng") || lowerAi.includes("chào") || isExit || isMusic) {
-            emotion = "happy";
-        } else {
-            emotion = "speaking";
-        }
-
         return new Response(JSON.stringify({
           user: userText,
           text: aiText,
           user_text: userText,
           ai_text: aiText,
-          emotion: emotion,
+          emotion: "happy",
           music_url: musicUrl,
           exit: isExit
         }), {
@@ -191,87 +161,21 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
     }
 
     // --------------------------------------------------------------------------
-    // CỔNG 3: HTTP GET /tts - CHUYỂN VĂN BẢN THÀNH GIỌNG NÓI MP3 (TƯƠNG THÍCH BẢN CŨ)
+    // CỔNG 3: HTTP GET /tts - HOÀI MY NEURAL TTS (FALLBACK GOOGLE TTS)
     // --------------------------------------------------------------------------
     if (request.method === "GET" && url.pathname === "/tts") {
       const text = url.searchParams.get("text");
       if (!text) return new Response("Missing text parameter", { status: 400 });
 
-      const FPT_API_KEY = env.FPT_API_KEY;
-      const ZALO_API_KEY = env.ZALO_API_KEY;
-
-      if (ZALO_API_KEY) {
-        try {
-          const params = new URLSearchParams();
-          params.append('input', text);
-          params.append('speaker_id', '1');
-          params.append('speed', '1.0');
-          params.append('encode_type', '1');
-
-          const zaloRes = await fetch("https://api.zalo.ai/v1/tts/synthesize", {
-            method: "POST",
-            headers: {
-              "apikey": ZALO_API_KEY,
-              "Content-Type": "application/x-www-form-urlencoded"
-            },
-            body: params.toString()
-          });
-
-          if (zaloRes.ok) {
-            const zaloData = await zaloRes.json();
-            if (zaloData.error_code === 0 && zaloData.data && zaloData.data.url) {
-              const asyncUrl = zaloData.data.url;
-              for (let i = 0; i < 20; i++) {
-                await new Promise(r => setTimeout(r, 400));
-                const audioRes = await fetch(asyncUrl);
-                if (audioRes.ok) {
-                  const mp3Buffer = await audioRes.arrayBuffer();
-                  if (mp3Buffer.byteLength > 100) {
-                    return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
-                  }
-                }
-              }
-            }
-          }
-        } catch (e) {
-          console.error("Zalo TTS failed, fallback to Google TTS:", e);
-        }
+      // Ưu tiên Hoài My Neural MP3
+      try {
+        const mp3Buffer = await fetchEdgeTTS(text, "vi-VN-HoaiMyNeural", "+0%", "audio-24khz-48kbitrate-mono-mp3");
+        return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
+      } catch (e) {
+        console.warn("Hoai My TTS failed, fallback to Google TTS:", e.message);
       }
 
-      if (FPT_API_KEY) {
-        try {
-          const fptRes = await fetch("https://api.fpt.ai/hmi/tts/v5", {
-            method: "POST",
-            headers: {
-              "api-key": FPT_API_KEY,
-              "voice": "banmai", 
-              "speed": "0" 
-            },
-            body: text
-          });
-
-          if (fptRes.ok) {
-            const fptData = await fptRes.json();
-            const asyncUrl = fptData.async;
-
-            for (let i = 0; i < 30; i++) {
-              const audioRes = await fetch(asyncUrl);
-              if (audioRes.ok) {
-                const contentType = audioRes.headers.get("content-type") || "";
-                if (contentType.includes("audio") || contentType.includes("mpeg") || contentType.includes("octet-stream")) {
-                  const mp3Buffer = await audioRes.arrayBuffer();
-                  return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
-                }
-              }
-              await new Promise(r => setTimeout(r, 500));
-            }
-          }
-        } catch (e) {
-          console.error("FPT TTS failed, fallback to Google TTS:", e);
-        }
-      }
-
-      // DỰ PHÒNG HOÀN HẢO: Nếu Zalo hoặc FPT lỗi/hết lượt/quá dài, tự động dùng Google TTS siêu tốc!
+      // Dự phòng Google TTS
       try {
         const mp3Buffer = await fetchGoogleTTS(text);
         return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
@@ -281,7 +185,7 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
     }
 
     // --------------------------------------------------------------------------
-    // CỔNG 4: HTTP GET /music - PROXY STREAM NHẠC MP3 TRỰC TIẾP CHO ESP32
+    // CỔNG 4: HTTP GET /music - PROXY STREAM NHẠC MP3
     // --------------------------------------------------------------------------
     if (request.method === "GET" && url.pathname === "/music") {
       const type = url.searchParams.get("type") || "vpop";
@@ -305,42 +209,41 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
     }
 
     // --------------------------------------------------------------------------
-    // CỔNG 5: TEST & STATUS
+    // CỔNG 5: TEST ENDPOINTS
     // --------------------------------------------------------------------------
     if (request.method === "GET" && url.pathname === "/test_chat") {
-      return new Response("ESP32 AI Backend & WebSocket /ws is ready!", { status: 200 });
+      return new Response("ESP32 AI Backend & WebSocket /ws is ready! Default voice: Hoai My Neural (Natural speed).", { status: 200 });
     }
 
-    return new Response("ESP32 AI Backend is active! WebSocket endpoint: /ws", { status: 200 });
+    return new Response("ESP32 AI Backend Active! WebSocket: /ws, TTS: Hoai My Neural.", { status: 200 });
   }
 };
 
 // ==============================================================================
-// XỬ LÝ PHIÊN WEBSOCKET FULL-DUPLEX CHO ESP32-S3
+// XỬ LÝ PHIÊN WEBSOCKET CHO ESP32-S3 (HỖ TRỢ CHUẨN XIAOZHI & CUSTOM PROTOCOL)
 // ==============================================================================
 function handleWebSocketSession(server, env, initialRequest) {
-  let audioChunks = [];
+  let audioChunks = []; // Lưu trữ chunks (PCM hoặc Opus)
   let isProcessing = false;
   let abortController = null;
   let conversationHistory = [];
-  let roomContext = "";
+  let isXiaozhiClient = false;
+  let sessionId = "session_" + Date.now();
 
-  // Helper gửi JSON an toàn
   const sendJSON = (obj) => {
     try {
       server.send(JSON.stringify(obj));
     } catch (e) {}
   };
 
-  // Helper gửi âm thanh Binary MP3 an toàn
-  const sendBinary = (arrayBuffer) => {
+  const sendBinary = (data) => {
     try {
-      server.send(arrayBuffer);
+      server.send(data);
     } catch (e) {}
   };
 
   server.addEventListener("message", async (event) => {
-    // 1. NHẬN DỮ LIỆU NHỊ PHÂN (PCM AUDIO CHUNK TỪ MICRO INMP441)
+    // 1. DỮ LIỆU NHỊ PHÂN: AUDIO PACKETS TỪ MICRO (OPUS HOẶC PCM)
     if (event.data instanceof ArrayBuffer) {
       if (event.data.byteLength > 0) {
         audioChunks.push(new Uint8Array(event.data));
@@ -348,28 +251,44 @@ function handleWebSocketSession(server, env, initialRequest) {
       return;
     }
 
-    // 2. NHẬN LỆNH ĐIỀU KHIỂN DẠNG TEXT / JSON
+    // 2. DỮ LIỆU TEXT / JSON CONTROL PACKETS
     if (typeof event.data === "string") {
       try {
         const msg = JSON.parse(event.data);
 
-        // Keep-alive Ping/Pong
+        // A. BẮT TAY GIAO THỨC XIAOZHI (HELLO)
+        if (msg.type === "hello") {
+          isXiaozhiClient = true;
+          if (msg.session_id) sessionId = msg.session_id;
+
+          sendJSON({
+            type: "hello",
+            transport: "websocket",
+            session_id: sessionId,
+            audio_params: {
+              format: "opus",
+              sample_rate: 16000,
+              channels: 1,
+              frame_duration: 60
+            }
+          });
+          return;
+        }
+
+        // B. KEEP-ALIVE PING
         if (msg.type === "ping") {
           sendJSON({ type: "pong", ts: Date.now() });
           return;
         }
 
-        // Bắt đầu lượt nói mới
-        if (msg.type === "start") {
+        // C. BẮT ĐẦU LƯỢT NÓI (START / LISTEN: START)
+        if (msg.type === "start" || (msg.type === "listen" && msg.state === "start")) {
           audioChunks = [];
-          if (msg.temp || msg.hum) {
-            roomContext = `Nhiệt độ phòng hiện tại: ${msg.temp || "--"}°C, độ ẩm: ${msg.hum || "--"}%. `;
-          }
           sendJSON({ type: "state", state: "listening" });
           return;
         }
 
-        // Lệnh cắt ngang (Voice Barge-in từ người dùng)
+        // D. LỆNH CẮT NGANG (BARGE-IN / ABORT)
         if (msg.type === "abort") {
           if (abortController) {
             abortController.abort();
@@ -378,14 +297,18 @@ function handleWebSocketSession(server, env, initialRequest) {
           audioChunks = [];
           isProcessing = false;
           sendJSON({ type: "state", state: "idle", interrupted: true });
+          if (isXiaozhiClient) {
+            sendJSON({ type: "tts", state: "stop" });
+          }
           return;
         }
 
-        // Kết thúc giọng nói -> Bắt đầu xử lý Full-Duplex pipeline
-        if (msg.type === "audio_end" || msg.type === "stop") {
+        // E. KẾT THÚC GIỌNG NÓI (STOP / LISTEN: STOP / AUDIO_END)
+        if (msg.type === "audio_end" || msg.type === "stop" || (msg.type === "listen" && msg.state === "stop")) {
           if (isProcessing) return;
           if (audioChunks.length === 0) {
             sendJSON({ type: "state", state: "idle" });
+            if (isXiaozhiClient) sendJSON({ type: "tts", state: "stop" });
             return;
           }
 
@@ -396,30 +319,31 @@ function handleWebSocketSession(server, env, initialRequest) {
           sendJSON({ type: "state", state: "thinking" });
 
           try {
-            // Gộp tất cả chunks PCM thành một Buffer lớn
-            let totalLength = 0;
-            for (const chunk of audioChunks) totalLength += chunk.byteLength;
-            const fullPcm = new Uint8Array(totalLength);
-            let offset = 0;
-            for (const chunk of audioChunks) {
-              fullPcm.set(chunk, offset);
-              offset += chunk.byteLength;
+            // Chuẩn bị file Audio gửi tới Groq Whisper
+            let audioBlobFile;
+            if (isXiaozhiClient) {
+              // Client Xiaozhi gửi các gói raw Opus -> Đóng gói OGG Opus chuẩn RFC 7845
+              const oggBuffer = opusPacketsToOgg(audioChunks, 16000);
+              audioChunks = [];
+              audioBlobFile = new File([oggBuffer], "audio.ogg", { type: "audio/ogg" });
+            } else {
+              // Client cũ gửi raw PCM 16-bit 16kHz
+              let totalLength = 0;
+              for (const chunk of audioChunks) totalLength += chunk.byteLength;
+              const fullPcm = new Uint8Array(totalLength);
+              let offset = 0;
+              for (const chunk of audioChunks) {
+                fullPcm.set(chunk, offset);
+                offset += chunk.byteLength;
+              }
+              audioChunks = [];
+              const wavBuffer = pcmToWav(fullPcm.buffer, 16000, 1, 16);
+              audioBlobFile = new File([wavBuffer], "audio.wav", { type: "audio/wav" });
             }
-            audioChunks = []; // Dọn dẹp RAM
 
-            // Nếu âm thanh quá ngắn (< 0.3s ~ 9600 bytes tại 16kHz 16bit)
-            if (fullPcm.byteLength < 9600) {
-              sendJSON({ type: "state", state: "idle" });
-              isProcessing = false;
-              return;
-            }
-
-            // Chuyển PCM sang WAV Header chuẩn
-            const wavBuffer = pcmToWav(fullPcm.buffer, 16000, 1, 16);
-
-            // BƯỚC 1: GROQ WHISPER STT
+            // BƯỚC 1: GROQ WHISPER STT SIÊU TỐC
             const formData = new FormData();
-            formData.append("file", new File([wavBuffer], "audio.wav", { type: "audio/wav" }));
+            formData.append("file", audioBlobFile);
             formData.append("model", "whisper-large-v3-turbo");
             formData.append("language", "vi");
             formData.append("response_format", "json");
@@ -437,16 +361,17 @@ function handleWebSocketSession(server, env, initialRequest) {
 
             if (!userText || signal.aborted) {
               sendJSON({ type: "state", state: "idle" });
+              if (isXiaozhiClient) sendJSON({ type: "tts", state: "stop" });
               isProcessing = false;
               return;
             }
 
-            // Bắn ngay kết quả STT về ESP32 để hiện lên màn hình TFT!
+            // Bắn ngay kết quả STT về ESP32 hiển thị lên màn hình
             sendJSON({ type: "stt", text: userText });
 
             const lowerUser = userText.toLowerCase().replace(/[.,!?]/g, '').trim();
 
-            // Lọc triệt để ảo giác (hallucination) của Whisper khi âm thanh bị nhiễu / tiếng quạt
+            // Lọc ảo giác Whisper
             const whisperHallucinations = [
               "đăng ký kênh", "đăng kí kênh", "dang ky kenh", "subscribe", "sub kênh", "like và sub",
               "ủng hộ kênh", "hẹn gặp lại", "cảm ơn các bạn đã theo dõi",
@@ -455,57 +380,28 @@ function handleWebSocketSession(server, env, initialRequest) {
               "quý vị và các bạn", "chào mừng các bạn", "hẹn gặp lại quý vị", "đón xem video",
               "ghiền mì gõ", "ghien mi go"
             ];
-            const isHallucination = whisperHallucinations.some(h => lowerUser.includes(h));
-            if (isHallucination) {
-              console.log("[Worker WS] Loc bo ao giac Whisper:", userText);
+            if (whisperHallucinations.some(h => lowerUser.includes(h))) {
               sendJSON({ type: "state", state: "listening" });
               isProcessing = false;
               return;
             }
 
-            // 1. Kiểm tra lệnh ngắt / dừng tạm thời (Barge-in / Pause)
-            const pauseKeywords = ["từ từ", "tu tu", "chờ chút", "cho chut", "đợi chút", "doi chut", "khoan", "chờ đã", "đợi đã", "im", "im lặng"];
-            const isPause = pauseKeywords.some(w => lowerUser === w || lowerUser.startsWith(w));
-
-            // 2. Kiểm tra lệnh thoát hoàn toàn
+            // Kiểm tra câu dừng / tạm biệt
             const exitKeywords = ["tạm biệt", "tam biet", "bye", "dừng lại", "dung lai", "kết thúc", "ket thuc", "thôi nha", "thôi nhé", "nghỉ thôi", "đủ rồi"];
             const isExit = exitKeywords.some(w => lowerUser.includes(w));
 
-            // 3. Kiểm tra từ khóa gọi đánh thức (Wake word)
-            const wakeKeywords = ["hey ai", "hello fen", "hello ai", "ai ơi", "bạn ơi", "fen ơi", "alo", "ê ai", "hey", "hello"];
-            const isOnlyWake = wakeKeywords.some(w => lowerUser === w);
-
-            // Xử lý phản hồi nhanh (Không cần tốn thời gian gọi LLM)
-            if (isPause) {
-              sendJSON({ type: "state", state: "speaking" });
-              await synthesizeAndStreamAudio("Vâng, tôi đang đợi bạn đây.", sendJSON, sendBinary, signal);
-              sendJSON({ type: "done", user_text: userText, ai_text: "Vâng, tôi đang đợi bạn đây.", exit: false });
-              return;
-            }
-
-            if (isExit) {
-              sendJSON({ type: "state", state: "speaking" });
-              await synthesizeAndStreamAudio("Tạm biệt bạn nhé, chúc bạn một ngày tốt lành!", sendJSON, sendBinary, signal);
-              sendJSON({ type: "done", user_text: userText, ai_text: "Tạm biệt bạn nhé!", exit: true });
-              return;
-            }
-
-            if (isOnlyWake) {
-              sendJSON({ type: "state", state: "speaking" });
-              await synthesizeAndStreamAudio("Tôi nghe đây, bạn cần tôi giúp gì nào?", sendJSON, sendBinary, signal);
-              sendJSON({ type: "done", user_text: userText, ai_text: "Tôi nghe đây, bạn cần tôi giúp gì nào?", exit: false });
-              return;
-            }
-
             // BƯỚC 2: STREAMING GROQ LLM (Qwen)
+            sendJSON({ type: "tts", state: "start" });
+            sendJSON({ type: "state", state: "speaking" });
+
             let weatherContext = await getWeatherAndContext(initialRequest);
             const systemPrompt = `Bạn là trợ lý ảo AI thông minh, vui vẻ và tự nhiên.
 QUY TẮC BẮT BUỘC: Luôn xưng "tôi" và gọi người dùng là "bạn". Tuyệt đối không dùng anh/chị hay dạ/thưa.
-Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 35 từ) để tương tác mượt mà trong thời gian thực. Không dùng ký tự markdown như *, #. ${roomContext}${weatherContext}`;
+Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 40 từ) để tương tác mượt mà trong thời gian thực. Không dùng ký tự markdown như *, #. ${weatherContext}`;
 
             const messages = [
               { role: "system", content: systemPrompt },
-              ...conversationHistory.slice(-4), // Giữ 2 lượt hội thoại gần nhất
+              ...conversationHistory.slice(-4),
               { role: "user", content: userText }
             ];
 
@@ -519,17 +415,15 @@ Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 35 từ
                 model: "qwen/qwen3.8-27b",
                 messages: messages,
                 temperature: 0.7,
-                max_tokens: 120,
-                stream: true // KÍCH HOẠT STREAMING ĐỘNG
+                max_tokens: 140,
+                stream: true
               }),
               signal
             });
 
             if (!llmRes.ok || !llmRes.body) throw new Error("LLM Stream Failed");
 
-            sendJSON({ type: "state", state: "speaking" });
-
-            // BƯỚC 3: SENTENCE STREAMING & REALTIME TTS PIPELINE
+            // BƯỚC 3: SENTENCE STREAMING & HOÀI MY NEURAL TTS
             const reader = llmRes.body.getReader();
             const decoder = new TextDecoder("utf-8");
             let accumulatedAiText = "";
@@ -557,16 +451,14 @@ Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 35 từ
                     accumulatedAiText += delta;
                     sentenceBuffer += delta;
 
-                    // Gửi token chữ về cho ESP32 hiển thị cuộn chữ
                     sendJSON({ type: "llm_delta", delta: delta });
 
-                    // Tách cụm câu dựa vào dấu ngắt câu hoặc độ dài
                     if (hasSentenceBoundary(sentenceBuffer)) {
                       const sentenceToSpeak = cleanSentence(sentenceBuffer);
                       sentenceBuffer = "";
 
                       if (sentenceToSpeak.length > 1 && !signal.aborted) {
-                        await synthesizeAndStreamAudio(sentenceToSpeak, sendJSON, sendBinary, signal);
+                        await speakSentence(sentenceToSpeak, sendJSON, sendBinary, isXiaozhiClient, signal);
                       }
                     }
                   }
@@ -574,21 +466,21 @@ Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 35 từ
               }
             }
 
-            // Xử lý nốt phần còn sót lại trong buffer
+            // Phần câu còn sót lại
             if (sentenceBuffer.trim().length > 0 && !signal.aborted) {
               const remainingSentence = cleanSentence(sentenceBuffer);
               if (remainingSentence.length > 1) {
-                await synthesizeAndStreamAudio(remainingSentence, sendJSON, sendBinary, signal);
+                await speakSentence(remainingSentence, sendJSON, sendBinary, isXiaozhiClient, signal);
               }
             }
 
-            // Cập nhật lịch sử
             if (!signal.aborted && accumulatedAiText.trim()) {
               conversationHistory.push({ role: "user", content: userText });
               conversationHistory.push({ role: "assistant", content: accumulatedAiText.trim() });
               if (conversationHistory.length > 6) conversationHistory.splice(0, 2);
             }
 
+            sendJSON({ type: "tts", state: "stop" });
             sendJSON({
               type: "done",
               user_text: userText,
@@ -600,6 +492,7 @@ Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 35 từ
             if (!signal.aborted) {
               console.error("[WS Error]:", err.message);
               sendJSON({ type: "error", message: err.message });
+              sendJSON({ type: "tts", state: "stop" });
               sendJSON({ type: "state", state: "listening" });
             }
           } finally {
@@ -624,12 +517,48 @@ Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 35 từ
 }
 
 // ==============================================================================
-// HÀM TIỆN ÍCH CHO FULL-DUPLEX & TTS STREAMING
+// PHÁT ÂM THANH CHO TỪNG CÂU (HOÀI MY NEURAL TTS)
 // ==============================================================================
+async function speakSentence(text, sendJSON, sendBinary, isXiaozhi, signal) {
+  try {
+    // Thông báo bắt đầu câu này -> Hiển thị text lên màn hình
+    sendJSON({ type: "tts", state: "sentence_start", text: text });
 
-// Nhận biết kết thúc một cụm câu / mệnh đề để bắn TTS ngay
+    if (isXiaozhi) {
+      // Dành cho Xiaozhi: Tạo Opus 16kHz -> Tách các gói Opus -> Bắn về ESP32
+      try {
+        const oggOpusBuffer = await fetchEdgeTTS(text, "vi-VN-HoaiMyNeural", "+0%", "audio-16khz-32kbitrate-mono-opus", signal);
+        if (signal.aborted) return;
+        const opusPackets = extractOpusPacketsFromOgg(oggOpusBuffer);
+        for (const pkt of opusPackets) {
+          if (signal.aborted) break;
+          sendBinary(pkt);
+        }
+        return;
+      } catch (e) {
+        console.warn("[Edge-TTS Opus failed]:", e.message);
+      }
+    }
+
+    // Dự phòng / Client thường: Tạo MP3 Hoài My hoặc Google TTS
+    try {
+      const mp3Buffer = await fetchEdgeTTS(text, "vi-VN-HoaiMyNeural", "+0%", "audio-24khz-48kbitrate-mono-mp3", signal);
+      if (signal.aborted) return;
+      sendBinary(mp3Buffer);
+    } catch (e) {
+      console.warn("[Edge-TTS MP3 failed, fallback Google]:", e.message);
+      const googleMp3 = await fetchGoogleTTS(text, signal);
+      if (signal.aborted) return;
+      sendBinary(googleMp3);
+    }
+
+  } catch (err) {
+    console.error("[speakSentence error]:", err.message);
+  }
+}
+
 function hasSentenceBoundary(str) {
-  if (str.length > 50) return true; // Quá 50 ký tự thì ngắt câu để nói ngay
+  if (str.length > 45) return true;
   return /[.,!?;:\n]/.test(str);
 }
 
@@ -637,62 +566,284 @@ function cleanSentence(str) {
   return str.replace(/[*_#~]/g, '').trim();
 }
 
-// Tổng hợp TTS siêu tốc bằng Google Translate (Trả MP3 trong <150ms)
-async function synthesizeAndStreamAudio(text, sendJSON, sendBinary, signal) {
-  try {
-    sendJSON({ type: "audio_start", text: text });
-    const mp3Buffer = await fetchGoogleTTS(text, signal);
-    if (signal.aborted) return;
-    
-    // Gửi trực tiếp nhị phân MP3 tới ESP32 để giải mã I2S
-    sendBinary(mp3Buffer);
-    sendJSON({ type: "audio_end" });
-  } catch (e) {
-    // Nếu lỗi TTS thì bỏ qua câu này để tiếp tục mạch nói
-  }
-}
+// ==============================================================================
+// MICROSOFT EDGE NEURAL TTS (HOÀI MY - vi-VN-HoaiMyNeural)
+// ==============================================================================
+async function fetchEdgeTTS(text, voice = "vi-VN-HoaiMyNeural", rate = "+0%", format = "audio-16khz-32kbitrate-mono-opus", signal = null) {
+  const connectionId = crypto.randomUUID().replace(/-/g, "");
+  const url = `https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EA654081836B88BA8BA368CE&ConnectionId=${connectionId}`;
 
-async function fetchGoogleTTS(text, signal = null) {
-  const clean = text.trim();
-  if (clean.length <= 160) {
-    return await fetchSingleGoogleTTS(clean, signal);
-  }
-
-  // Chia nhỏ câu theo dấu chấm, phẩy hoặc khoảng trắng (<150 ký tự) để Google TTS không bao giờ bị lỗi 400
-  const chunks = [];
-  let remaining = clean;
-  while (remaining.length > 0) {
-    if (remaining.length <= 150) {
-      chunks.push(remaining);
-      break;
+  const resp = await fetch(url, {
+    headers: {
+      "Upgrade": "websocket",
+      "Connection": "Upgrade",
+      "Origin": "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
     }
-    let splitIdx = remaining.lastIndexOf(".", 150);
-    if (splitIdx === -1) splitIdx = remaining.lastIndexOf(",", 150);
-    if (splitIdx === -1) splitIdx = remaining.lastIndexOf(" ", 150);
-    if (splitIdx === -1) splitIdx = 150;
-    else splitIdx += 1;
+  });
 
-    const part = remaining.slice(0, splitIdx).trim();
-    if (part) chunks.push(part);
-    remaining = remaining.slice(splitIdx).trim();
-  }
+  const ws = resp.webSocket;
+  if (!ws) throw new Error("Edge TTS WebSocket upgrade failed");
+  ws.accept();
 
-  // Tải song song tất cả các đoạn MP3
-  const buffers = await Promise.all(chunks.map(c => fetchSingleGoogleTTS(c, signal)));
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let timeout = setTimeout(() => {
+      try { ws.close(); } catch(e) {}
+      reject(new Error("Edge TTS timeout (6s)"));
+    }, 6000);
 
-  // Nối các khối MP3 nhị phân thành 1 file MP3 hoàn chỉnh duy nhất
-  let totalLength = 0;
-  for (const b of buffers) totalLength += b.byteLength;
-  const merged = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const b of buffers) {
-    merged.set(new Uint8Array(b), offset);
-    offset += b.byteLength;
-  }
-  return merged.buffer;
+    if (signal) {
+      signal.addEventListener("abort", () => {
+        clearTimeout(timeout);
+        try { ws.close(); } catch(e) {}
+        reject(new Error("Aborted"));
+      });
+    }
+
+    ws.addEventListener("message", (event) => {
+      if (typeof event.data === "string") {
+        if (event.data.includes("Path:turn.end")) {
+          clearTimeout(timeout);
+          try { ws.close(); } catch(e) {}
+          let totalLen = 0;
+          for (const c of chunks) totalLen += c.byteLength;
+          const merged = new Uint8Array(totalLen);
+          let offset = 0;
+          for (const c of chunks) {
+            merged.set(new Uint8Array(c), offset);
+            offset += c.byteLength;
+          }
+          resolve(merged.buffer);
+        }
+      } else if (event.data instanceof ArrayBuffer) {
+        const view = new DataView(event.data);
+        const headerLen = view.getUint16(0);
+        if (event.data.byteLength > 2 + headerLen) {
+          chunks.push(event.data.slice(2 + headerLen));
+        }
+      }
+    });
+
+    ws.addEventListener("error", (e) => {
+      clearTimeout(timeout);
+      reject(new Error("Edge TTS WS error"));
+    });
+
+    ws.addEventListener("close", () => {
+      clearTimeout(timeout);
+      if (chunks.length > 0) {
+        let totalLen = 0;
+        for (const c of chunks) totalLen += c.byteLength;
+        const merged = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const c of chunks) {
+          merged.set(new Uint8Array(c), offset);
+          offset += c.byteLength;
+        }
+        resolve(merged.buffer);
+      }
+    });
+
+    // Send speech.config
+    ws.send(
+      "Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n" +
+      JSON.stringify({
+        context: {
+          synthesis: {
+            audio: {
+              metadataoptions: {
+                sentenceBoundaryEnabled: "false",
+                wordBoundaryEnabled: "false"
+              },
+              outputFormat: format
+            }
+          }
+        }
+      }) + "\r\n"
+    );
+
+    // Send SSML
+    const requestId = crypto.randomUUID().replace(/-/g, "");
+    const cleanText = text.replace(/[*_#~<>&]/g, ' ').trim();
+    const ssml =
+      `X-RequestId:${requestId}\r\n` +
+      `Content-Type:application/ssml+xml\r\n` +
+      `Path:ssml\r\n\r\n` +
+      `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='vi-VN'>` +
+      `<voice name='${voice}'>` +
+      `<prosody rate='${rate}' pitch='+0Hz'>${cleanText}</prosody>` +
+      `</voice></speak>`;
+
+    ws.send(ssml);
+  });
 }
 
-async function fetchSingleGoogleTTS(text, signal = null) {
+// ==============================================================================
+// TRÍCH XUẤT RAW OPUS PACKETS TỪ OGG CONTAINER CỦA EDGE-TTS
+// ==============================================================================
+function extractOpusPacketsFromOgg(oggBuffer) {
+  const uint8 = new Uint8Array(oggBuffer);
+  const packets = [];
+  let offset = 0;
+  let pageIndex = 0;
+
+  while (offset + 27 <= oggBuffer.byteLength) {
+    if (uint8[offset] !== 0x4f || uint8[offset+1] !== 0x67 || uint8[offset+2] !== 0x67 || uint8[offset+3] !== 0x53) {
+      offset++;
+      continue;
+    }
+    const numSegments = uint8[offset + 26];
+    if (offset + 27 + numSegments > oggBuffer.byteLength) break;
+
+    const segmentTable = [];
+    let bodySize = 0;
+    for (let i = 0; i < numSegments; i++) {
+      const segLen = uint8[offset + 27 + i];
+      segmentTable.push(segLen);
+      bodySize += segLen;
+    }
+
+    const bodyOffset = offset + 27 + numSegments;
+    if (bodyOffset + bodySize > oggBuffer.byteLength) break;
+
+    let curOffset = bodyOffset;
+    let packetParts = [];
+
+    for (let i = 0; i < numSegments; i++) {
+      const segLen = segmentTable[i];
+      if (pageIndex >= 2 && segLen > 0) {
+        packetParts.push(uint8.subarray(curOffset, curOffset + segLen));
+      }
+      curOffset += segLen;
+      if (segLen < 255) {
+        if (pageIndex >= 2 && packetParts.length > 0) {
+          let totalLen = 0;
+          for (const p of packetParts) totalLen += p.byteLength;
+          const pkt = new Uint8Array(totalLen);
+          let pOff = 0;
+          for (const p of packetParts) {
+            pkt.set(p, pOff);
+            pOff += p.byteLength;
+          }
+          packets.push(pkt.buffer);
+        }
+        packetParts = [];
+      }
+    }
+
+    pageIndex++;
+    offset = bodyOffset + bodySize;
+  }
+  return packets;
+}
+
+// ==============================================================================
+// ĐÓNG GÓI CÁC GÓI OPUS THÀNH FILE OGG OPUS CHUẨN CHO GROQ WHISPER
+// ==============================================================================
+const OGG_CRC_TABLE = new Uint32Array(256);
+for (let i = 0; i < 256; i++) {
+  let r = i << 24;
+  for (let j = 0; j < 8; j++) {
+    r = (r & 0x80000000) ? (((r << 1) ^ 0x04c11db7) >>> 0) : ((r << 1) >>> 0);
+  }
+  OGG_CRC_TABLE[i] = r;
+}
+
+function oggChecksum(buf) {
+  let crc = 0;
+  for (let i = 0; i < buf.length; i++) {
+    crc = ((crc << 8) ^ OGG_CRC_TABLE[((crc >>> 24) ^ buf[i]) & 0xff]) >>> 0;
+  }
+  return crc;
+}
+
+function opusPacketsToOgg(packets, sampleRate = 16000) {
+  const serial = 0x12345678;
+  const pages = [];
+
+  function createPage(headerType, granulePos, pageSeq, packetData) {
+    const u8Data = new Uint8Array(packetData);
+    const numSegments = Math.ceil(u8Data.byteLength / 255) || 1;
+    const headerLen = 27 + numSegments;
+    const pageBuf = new Uint8Array(headerLen + u8Data.byteLength);
+    const view = new DataView(pageBuf.buffer);
+
+    pageBuf[0] = 0x4f; pageBuf[1] = 0x67; pageBuf[2] = 0x67; pageBuf[3] = 0x53; // "OggS"
+    pageBuf[4] = 0;
+    pageBuf[5] = headerType;
+    view.setBigUint64(6, BigInt(granulePos), true);
+    view.setUint32(14, serial, true);
+    view.setUint32(18, pageSeq, true);
+    view.setUint32(22, 0, true);
+    pageBuf[26] = numSegments;
+
+    let rem = u8Data.byteLength;
+    for (let i = 0; i < numSegments; i++) {
+      const segLen = Math.min(rem, 255);
+      pageBuf[27 + i] = segLen;
+      rem -= segLen;
+    }
+
+    pageBuf.set(u8Data, headerLen);
+    const crc = oggChecksum(pageBuf);
+    view.setUint32(22, crc, true);
+    return pageBuf;
+  }
+
+  // Page 0: OpusHead
+  const headBuf = new ArrayBuffer(19);
+  const headView = new DataView(headBuf);
+  const headU8 = new Uint8Array(headBuf);
+  const magic = "OpusHead";
+  for (let i = 0; i < 8; i++) headU8[i] = magic.charCodeAt(i);
+  headU8[8] = 1;
+  headU8[9] = 1;
+  headView.setUint16(10, 0, true);
+  headView.setUint32(12, sampleRate, true);
+  headView.setUint16(16, 0, true);
+  headU8[18] = 0;
+  pages.push(createPage(0x02, 0, 0, headBuf));
+
+  // Page 1: OpusTags
+  const tagBuf = new ArrayBuffer(24);
+  const tagView = new DataView(tagBuf);
+  const tagU8 = new Uint8Array(tagBuf);
+  const tagMagic = "OpusTags";
+  for (let i = 0; i < 8; i++) tagU8[i] = tagMagic.charCodeAt(i);
+  tagView.setUint32(8, 8, true);
+  const vendor = "xiaozhi\0";
+  for (let i = 0; i < 8; i++) tagU8[12 + i] = vendor.charCodeAt(i);
+  tagView.setUint32(20, 0, true);
+  pages.push(createPage(0x00, 0, 1, tagBuf));
+
+  // Audio pages
+  let granule = 0;
+  const samplesPerFrame = sampleRate === 16000 ? 960 : 1440;
+  let pageSeq = 2;
+
+  for (let i = 0; i < packets.length; i++) {
+    granule += samplesPerFrame;
+    const isLast = (i === packets.length - 1);
+    const headerType = isLast ? 0x04 : 0x00;
+    pages.push(createPage(headerType, granule, pageSeq++, packets[i]));
+  }
+
+  let totalSize = 0;
+  for (const p of pages) totalSize += p.byteLength;
+  const finalOgg = new Uint8Array(totalSize);
+  let off = 0;
+  for (const p of pages) {
+    finalOgg.set(p, off);
+    off += p.byteLength;
+  }
+  return finalOgg.buffer;
+}
+
+// ==============================================================================
+// DỰ PHÒNG: GOOGLE TRANSLATE TTS
+// ==============================================================================
+async function fetchGoogleTTS(text, signal = null) {
   const encodedText = encodeURIComponent(text.trim());
   const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=${encodedText}`;
   const res = await fetch(ttsUrl, {
@@ -705,7 +856,6 @@ async function fetchSingleGoogleTTS(text, signal = null) {
   return await res.arrayBuffer();
 }
 
-// Chuyển PCM thô thành WAV Buffer hợp lệ cho Groq Whisper
 function pcmToWav(pcmBuffer, sampleRate = 16000, numChannels = 1, bitsPerSample = 16) {
   const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
   const blockAlign = numChannels * (bitsPerSample / 8);
@@ -713,22 +863,19 @@ function pcmToWav(pcmBuffer, sampleRate = 16000, numChannels = 1, bitsPerSample 
   const header = new ArrayBuffer(44);
   const view = new DataView(header);
 
-  // RIFF Chunk
   writeAscii(view, 0, "RIFF");
   view.setUint32(4, 36 + dataSize, true);
   writeAscii(view, 8, "WAVE");
 
-  // fmt Subchunk
   writeAscii(view, 12, "fmt ");
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM format
+  view.setUint16(20, 1, true);
   view.setUint16(22, numChannels, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, byteRate, true);
   view.setUint16(32, blockAlign, true);
   view.setUint16(34, bitsPerSample, true);
 
-  // data Subchunk
   writeAscii(view, 36, "data");
   view.setUint32(40, dataSize, true);
 
@@ -744,7 +891,6 @@ function writeAscii(view, offset, str) {
   }
 }
 
-// Lấy thông tin thời tiết & thời gian tự động
 async function getWeatherAndContext(request) {
   try {
     const city = request.cf?.city && request.cf.city !== "Việt Nam" ? request.cf.city : "Biên Hòa, Đồng Nai";
