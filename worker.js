@@ -109,8 +109,9 @@ export default {
 
         const msgList = [
           { role: "system", content: `Bạn là trợ lý AI thông minh, hiểu biết sâu rộng, thân thiện và gần gũi.
-QUY TẮC XƯNG HÔ BẮT BUỘC: Luôn luôn xưng là "tôi" và gọi người dùng là "bạn" (tuyệt đối không xưng em, không gọi anh/chị, không dùng dạ/thưa, không dùng câu hỏi rập khuôn như bạn cần gì/anh cần giúp gì).
-PHONG CÁCH TRẢ LỜI: Hãy trả lời tự nhiên, thân thiện và súc tích (khoảng 2 đến 3 câu, dưới 60 từ) phù hợp với đàm thoại giọng nói qua loa thông minh. Đầy đủ ý, nói thẳng vào trọng tâm câu hỏi của người dùng. Tuyệt đối không dùng ký tự markdown như *, #, ~, gạch đầu dòng.
+QUY TẮC XƯNG HÔ BẮT BUỘC: Bạn với tui. Luôn xưng là "tôi" và gọi người dùng là "bạn" (tuyệt đối không xưng em, không gọi anh/chị, không dùng dạ/thưa, không dùng câu hỏi rập khuôn như bạn cần gì/anh cần giúp gì).
+VỊ TRÍ MẶC ĐỊNH: Nhà của bạn ở Biên Hòa, Đồng Nai. Khi hỏi thời tiết hoặc hỏi địa điểm mà không nói rõ ở đâu, luôn mặc định là thời tiết tại Biên Hòa.
+PHONG CÁCH TRẢ LỜI: Hãy trả lời tự nhiên, thân thiện và súc tích (khoảng 2 đến 3 câu, dưới 50 từ) phù hợp với đàm thoại giọng nói qua loa thông minh. Đầy đủ ý, nói thẳng vào trọng tâm câu hỏi của người dùng. Tuyệt đối không dùng ký tự markdown như *, #, ~, gạch đầu dòng.
 XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ ngữ về đăng ký kênh/YouTube do nhận diện nhầm, chỉ cần vui vẻ nói: "Tôi đang lắng nghe bạn đây, bạn hãy nói lại nhé." Tuyệt đối không nhắc lại chuyện đăng ký kênh. ${weatherContext}` },
           { role: "user", content: userText }
         ];
@@ -396,8 +397,9 @@ function handleWebSocketSession(server, env, initialRequest) {
 
             let weatherContext = await getWeatherAndContext(initialRequest);
             const systemPrompt = `Bạn là trợ lý ảo AI thông minh, vui vẻ và tự nhiên.
-QUY TẮC BẮT BUỘC: Luôn xưng "tôi" và gọi người dùng là "bạn". Tuyệt đối không dùng anh/chị hay dạ/thưa.
-Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 40 từ) để tương tác mượt mà trong thời gian thực. Không dùng ký tự markdown như *, #. ${weatherContext}`;
+QUY TẮC BẮT BUỘC: Bạn với tui. Luôn xưng "tôi" và gọi người dùng là "bạn". Tuyệt đối không dùng anh/chị hay dạ/thưa.
+VỊ TRÍ MẶC ĐỊNH: Nhà của bạn ở Biên Hòa, Đồng Nai. Khi người dùng hỏi thời tiết hoặc hỏi địa điểm mà không nói rõ ở đâu, luôn mặc định là thời tiết tại Biên Hòa.
+Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 45 từ) nói thẳng vào trọng tâm để tương tác mượt mà qua loa thông minh. Không dùng ký tự markdown như *, #. ${weatherContext}`;
 
             const messages = [
               { role: "system", content: systemPrompt },
@@ -893,18 +895,18 @@ function writeAscii(view, offset, str) {
 
 async function getWeatherAndContext(request) {
   try {
-    const city = request.cf?.city && request.cf.city !== "Việt Nam" ? request.cf.city : "Biên Hòa, Đồng Nai";
-    const lat = request.cf?.latitude || 10.9454;
-    const lon = request.cf?.longitude || 106.8243;
+    const city = "Biên Hòa, Đồng Nai";
+    const lat = 10.9454;
+    const lon = 106.8243;
     const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m`);
     let outsideInfo = "";
     if (weatherRes.ok) {
       const wData = await weatherRes.json();
-      outsideInfo = `Thời tiết ngoài trời ${city}: ${wData.current.temperature_2m}°C, độ ẩm ${wData.current.relative_humidity_2m}%. `;
+      outsideInfo = `Thời tiết ngoài trời tại nhà bạn ở Biên Hòa: ${wData.current.temperature_2m}°C, độ ẩm ${wData.current.relative_humidity_2m}%. `;
     }
     const now = new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", dateStyle: "full", timeStyle: "short" });
-    return `(Thời gian hiện tại: ${now}. ${outsideInfo})`;
+    return `(Nhà bạn ở Biên Hòa, Đồng Nai. Thời gian hiện tại: ${now}. ${outsideInfo})`;
   } catch (e) {
-    return "";
+    return "(Nhà bạn ở Biên Hòa, Đồng Nai.)";
   }
 }
