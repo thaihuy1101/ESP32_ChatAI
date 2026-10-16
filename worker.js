@@ -1,9 +1,12 @@
 // ==============================================================================
-// CLOUDFLARE WORKER: ESP32-S3 FULL-DUPLEX AI (XIAOZHI & REST SUPPORT)
-// TTS CHÍNH: Microsoft Edge Neural TTS - Giọng HOÀI MY (vi-VN-HoaiMyNeural)
-// Hỗ trợ:
-// 1. WebSocket /ws: Giao thức Xiaozhi (hello, listen, stt, tts) + Voice Barge-in
-// 2. HTTP /chat, /tts, /music, /test_chat: Tương thích ngược toàn diện
+// CLOUDFLARE WORKER: ESP32-S3 FULL-DUPLEX AI BACKEND
+// - Cloudflare KV CHAT_HISTORY: Lưu tối đa 6 câu đối thoại gần nhất
+// - TTS CHÍNH: Microsoft Edge Neural TTS - Giọng HOÀI MY (vi-VN-HoaiMyNeural)
+// - Thời gian thực: Múi giờ Việt Nam GMT+7 (Asia/Ho_Chi_Minh)
+// - Thời tiết thực tế: Open-Meteo API (Mặc định Biên Hòa, Đồng Nai + tra cứu tỉnh thành)
+// - Kho nhạc Việt: V-Pop Hits, Lofi Chill Việt, Trữ Tình Bolero, Vinahouse/EDM, Piano, Sài Gòn Radio
+// - Fix đọc lắp bắp: Đồng bộ thời lượng âm thanh (audio duration pacing), triệt tiêu ngắt quãng
+// - Giao thức hỗ trợ: Chuẩn Xiaozhi WebSocket (/ws), HTTP REST (/chat, /tts, /music, /test_chat)
 // ==============================================================================
 
 export default {
@@ -22,7 +25,7 @@ export default {
       const [client, server] = Object.values(webSocketPair);
 
       server.accept();
-      handleWebSocketSession(server, env, request);
+      handleWebSocketSession(server, env, ctx, request);
 
       return new Response(null, {
         status: 101,
@@ -31,7 +34,70 @@ export default {
     }
 
     // --------------------------------------------------------------------------
-    // CỔNG 2: HTTP POST /chat - REST STT + LLM (TƯƠNG THÍCH BẢN CŨ)
+    // CỔNG 2: HTTP GET /music - PROXY STREAM KHO NHẠC VIỆT CHO ESP32
+    // --------------------------------------------------------------------------
+    if (request.method === "GET" && url.pathname === "/music") {
+      const type = (url.searchParams.get("type") || "vpop").toLowerCase();
+      let targetUrl = "https://stream.zeno.fm/0r0xa792kwzuv"; // Mặc định V-Pop
+
+      if (type === "lofi" || type === "chill") {
+        targetUrl = "https://stream.zeno.fm/f3wvbbqmdg8uv";
+      } else if (type === "bolero" || type === "lovesongs" || type === "trutinh") {
+        targetUrl = "http://listen.57fm.com/lscafe";
+      } else if (type === "remix" || type === "vinahouse" || type === "dance") {
+        targetUrl = "https://streams.ilovemusic.de/iloveradio17.mp3";
+      } else if (type === "piano" || type === "relax") {
+        targetUrl = "https://streams.ilovemusic.de/iloveradio26.mp3";
+      } else if (type === "saigon" || type === "radio") {
+        targetUrl = "https://stream.zeno.fm/jxniabwipmhtv";
+      } else if (type === "cherry" || type === "top100") {
+        targetUrl = "https://stream.zeno.fm/umt5gqmg3reuv";
+      }
+
+      try {
+        const streamRes = await fetch(targetUrl, {
+          headers: { "User-Agent": "ESP8266Audio" }
+        });
+
+        return new Response(streamRes.body, {
+          status: 200,
+          headers: {
+            "Content-Type": "audio/mpeg",
+            "Cache-Control": "no-cache",
+            "Access-Control-Allow-Origin": "*"
+          }
+        });
+      } catch (err) {
+        return new Response("Stream error: " + err.message, { status: 502 });
+      }
+    }
+
+    // --------------------------------------------------------------------------
+    // CỔNG 3: HTTP GET /tts - HOÀI MY NEURAL TTS (FALLBACK GOOGLE TTS)
+    // --------------------------------------------------------------------------
+    if (request.method === "GET" && url.pathname === "/tts") {
+      const text = url.searchParams.get("text");
+      if (!text) return new Response("Missing text parameter", { status: 400 });
+
+      // Ưu tiên Edge TTS Hoài My Neural MP3
+      try {
+        const mp3Buffer = await fetchEdgeTTS(text, "vi-VN-HoaiMyNeural", "+0%", "audio-24khz-48kbitrate-mono-mp3");
+        return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
+      } catch (e) {
+        console.warn("[TTS] Hoai My failed, fallback to Google TTS:", e.message);
+      }
+
+      // Dự phòng Google TTS
+      try {
+        const mp3Buffer = await fetchGoogleTTS(text);
+        return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
+      } catch (e) {
+        return new Response("TTS Failed: " + e.message, { status: 500 });
+      }
+    }
+
+    // --------------------------------------------------------------------------
+    // CỔNG 4: HTTP POST /chat - REST STT + LLM (TƯƠNG THÍCH BẢN CŨ)
     // --------------------------------------------------------------------------
     if (request.method === "POST" && url.pathname === "/chat") {
       const GROQ_API_KEY = env.GROQ_API_KEY;
@@ -54,65 +120,35 @@ export default {
         });
 
         if (!sttResponse.ok) {
-            const errorText = await sttResponse.text();
-            let shortError = errorText;
-            try {
-               const errJson = JSON.parse(errorText);
-               if (errJson.error && errJson.error.message) {
-                   shortError = errJson.error.message;
-               }
-            } catch(e) {}
-            throw new Error(`STT: ${shortError}`);
+          throw new Error("STT Failed");
         }
         const sttData = await sttResponse.json();
         const userText = (sttData.text || "").trim();
 
         if (!userText) return new Response(JSON.stringify({ error: "No speech" }), { status: 400 });
 
-        // Lọc ảo giác Whisper
-        const lowerRaw = userText.toLowerCase();
-        const whisperHallucinations = [
-          "đăng ký kênh", "đăng kí kênh", "dang ky kenh", "subscribe", "sub kênh", "like và sub",
-          "ủng hộ kênh", "hẹn gặp lại", "cảm ơn các bạn đã theo dõi",
-          "chúc các bạn", "video sau", "mời các bạn đón xem", "kênh của mình",
-          "chia sẻ video", "hãy subscribe", "like và chia sẻ", "bấm chuông",
-          "quý vị và các bạn", "chào mừng các bạn", "hẹn gặp lại quý vị", "đón xem video",
-          "ghiền mì gõ", "ghien mi go"
-        ];
-        if (whisperHallucinations.some(h => lowerRaw.includes(h))) {
+        if (isWhisperHallucination(userText)) {
           return new Response(JSON.stringify({ error: "Hallucination filtered", no_speech: true }), { status: 400 });
         }
 
-        let weatherContext = await getWeatherAndContext(request);
+        const weatherContext = await getDetailedWeatherAndContext(userText);
+        const timeContext = getRealTimeContext();
 
-        const musicKeywords = [
-          "hát", "hát đi", "hát một bài", "hát bài", "ca một bài",
-          "mở bài", "bật bài", "phát bài", "nghe bài", "mở nhạc",
-          "bật nhạc", "phát nhạc", "chơi bài", "chơi nhạc", "bài hát",
-          "nghe nhạc", "play", "music", "song"
-        ];
-        const lowerUser = userText.toLowerCase();
-        const isMusic = musicKeywords.some(w => lowerUser.includes(w));
+        const matchMusic = detectMusicIntent(userText);
         let musicUrl = "";
-
-        if (isMusic) {
-          let streamType = "vpop";
-          if (lowerUser.includes("lofi") || lowerUser.includes("chill") || lowerUser.includes("thư giãn") || lowerUser.includes("ngủ")) {
-            streamType = "lofi";
-          } else if (lowerUser.includes("piano") || lowerUser.includes("không lời")) {
-            streamType = "piano";
-          } else if (lowerUser.includes("dance") || lowerUser.includes("edm") || lowerUser.includes("sôi động") || lowerUser.includes("tiếng anh")) {
-            streamType = "dance";
-          }
-          musicUrl = `${url.origin}/music?type=${streamType}`;
+        if (matchMusic.isMusic) {
+          musicUrl = `${url.origin}/music?type=${matchMusic.type}`;
         }
 
         const msgList = [
-          { role: "system", content: `Bạn là trợ lý AI thông minh, hiểu biết sâu rộng, thân thiện và gần gũi.
-QUY TẮC XƯNG HÔ BẮT BUỘC: Bạn với tui. Luôn xưng là "tôi" và gọi người dùng là "bạn" (tuyệt đối không xưng em, không gọi anh/chị, không dùng dạ/thưa, không dùng câu hỏi rập khuôn như bạn cần gì/anh cần giúp gì).
-VỊ TRÍ MẶC ĐỊNH: Nhà của bạn ở Biên Hòa, Đồng Nai. Khi hỏi thời tiết hoặc hỏi địa điểm mà không nói rõ ở đâu, luôn mặc định là thời tiết tại Biên Hòa.
-PHONG CÁCH TRẢ LỜI: Hãy trả lời tự nhiên, thân thiện và súc tích (khoảng 2 đến 3 câu, dưới 50 từ) phù hợp với đàm thoại giọng nói qua loa thông minh. Đầy đủ ý, nói thẳng vào trọng tâm câu hỏi của người dùng. Tuyệt đối không dùng ký tự markdown như *, #, ~, gạch đầu dòng.
-XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ ngữ về đăng ký kênh/YouTube do nhận diện nhầm, chỉ cần vui vẻ nói: "Tôi đang lắng nghe bạn đây, bạn hãy nói lại nhé." Tuyệt đối không nhắc lại chuyện đăng ký kênh. ${weatherContext}` },
+          {
+            role: "system",
+            content: `Bạn là trợ lý AI thông minh, hiểu biết sâu rộng, thân thiện và gần gũi.
+QUY TẮC XƯNG HÔ: Luôn xưng là "tôi" và gọi người dùng là "bạn" (tuyệt đối không xưng em, không gọi anh/chị, không dùng dạ/thưa).
+THỜI GIAN THỰC TẾ: Bây giờ là ${timeContext.time}, ${timeContext.date}.
+VỊ TRÍ & THỜI TIẾT: ${weatherContext}
+PHONG CÁCH TRẢ LỜI: Hãy trả lời tự nhiên, thân thiện và súc tích (khoảng 2 đến 3 câu, dưới 50 từ) phù hợp với đàm thoại giọng nói qua loa thông minh. Không dùng ký tự markdown như *, #, gạch đầu dòng.`
+          },
           { role: "user", content: userText }
         ];
 
@@ -130,19 +166,14 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
           })
         });
 
-        if (!llmResponse.ok) throw new Error(`LLM Failed`);
+        if (!llmResponse.ok) throw new Error("LLM Failed");
 
         const llmData = await llmResponse.json();
         let aiText = llmData.choices[0].message.content.trim();
-        if (!aiText) aiText = isMusic ? "Tôi đang mở nhạc cho bạn đây, chúc bạn nghe vui vẻ!" : "Tôi không có câu trả lời.";
+        if (!aiText) aiText = matchMusic.isMusic ? `Tôi đang mở ${matchMusic.title} cho bạn đây, chúc bạn nghe vui vẻ!` : "Tôi không có câu trả lời.";
         aiText = aiText.replace(/[*_#~]/g, '');
 
-        const exitKeywords = [
-          "từ từ", "tu tu", "chờ chút", "cho chut", "đợi chút", "doi chut", "khoan",
-          "dừng", "dừng lại", "dung lai", "tạm biệt", "tam biet", "cảm ơn", "cam on",
-          "đủ rồi", "du roi", "bye", "nghỉ thôi", "kết thúc", "ket thuc", "thôi nha", "thôi nhé"
-        ];
-        const isExit = exitKeywords.some(w => lowerUser.includes(w));
+        const isExit = isExitCommand(userText);
 
         return new Response(JSON.stringify({
           user: userText,
@@ -162,68 +193,21 @@ XỬ LÝ TẠP ÂM: Nếu câu người dùng không rõ ràng hoặc có từ n
     }
 
     // --------------------------------------------------------------------------
-    // CỔNG 3: HTTP GET /tts - HOÀI MY NEURAL TTS (FALLBACK GOOGLE TTS)
-    // --------------------------------------------------------------------------
-    if (request.method === "GET" && url.pathname === "/tts") {
-      const text = url.searchParams.get("text");
-      if (!text) return new Response("Missing text parameter", { status: 400 });
-
-      // Ưu tiên Hoài My Neural MP3
-      try {
-        const mp3Buffer = await fetchEdgeTTS(text, "vi-VN-HoaiMyNeural", "+0%", "audio-24khz-48kbitrate-mono-mp3");
-        return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
-      } catch (e) {
-        console.warn("Hoai My TTS failed, fallback to Google TTS:", e.message);
-      }
-
-      // Dự phòng Google TTS
-      try {
-        const mp3Buffer = await fetchGoogleTTS(text);
-        return new Response(mp3Buffer, { headers: { "Content-Type": "audio/mpeg" } });
-      } catch (e) {
-        return new Response("TTS Failed: " + e.message, { status: 500 });
-      }
-    }
-
-    // --------------------------------------------------------------------------
-    // CỔNG 4: HTTP GET /music - PROXY STREAM NHẠC MP3
-    // --------------------------------------------------------------------------
-    if (request.method === "GET" && url.pathname === "/music") {
-      const type = url.searchParams.get("type") || "vpop";
-      let target = "https://stream.zeno.fm/0r0xa792kwzuv";
-      if (type === "lofi") target = "https://stream.zeno.fm/f3wvbbqmdg8uv";
-      else if (type === "piano") target = "https://streams.ilovemusic.de/iloveradio26.mp3";
-      else if (type === "dance") target = "https://streams.ilovemusic.de/iloveradio17.mp3";
-
-      const streamRes = await fetch(target, {
-        headers: { "User-Agent": "ESP8266Audio" }
-      });
-
-      return new Response(streamRes.body, {
-        status: 200,
-        headers: {
-          "Content-Type": "audio/mpeg",
-          "Cache-Control": "no-cache",
-          "Access-Control-Allow-Origin": "*"
-        }
-      });
-    }
-
-    // --------------------------------------------------------------------------
-    // CỔNG 5: TEST ENDPOINTS
+    // CỔNG 5: TEST STATUS ENDPOINT
     // --------------------------------------------------------------------------
     if (request.method === "GET" && url.pathname === "/test_chat") {
-      return new Response("ESP32 AI Backend & WebSocket /ws is ready! Default voice: Hoai My Neural (Natural speed).", { status: 200 });
+      const timeInfo = getRealTimeContext();
+      return new Response(`ESP32 AI Backend & WebSocket /ws is ready!\nThời gian: ${timeInfo.time}, ${timeInfo.date}\nTTS: Hoai My Neural (vi-VN)\nKV CHAT_HISTORY: ${env.CHAT_HISTORY ? "CONNECTED" : "NOT BOUND"}`, { status: 200 });
     }
 
-    return new Response("ESP32 AI Backend Active! WebSocket: /ws, TTS: Hoai My Neural.", { status: 200 });
+    return new Response("ESP32 AI Backend Active! WebSocket: /ws, TTS: Hoai My Neural, KV: CHAT_HISTORY.", { status: 200 });
   }
 };
 
 // ==============================================================================
-// XỬ LÝ PHIÊN WEBSOCKET CHO ESP32-S3 (HỖ TRỢ CHUẨN XIAOZHI & CUSTOM PROTOCOL)
+// XỬ LÝ PHIÊN WEBSOCKET CHO ESP32-S3 (XIAOZHI FULL-DUPLEX PROTOCOL)
 // ==============================================================================
-function handleWebSocketSession(server, env, initialRequest) {
+async function handleWebSocketSession(server, env, ctx, initialRequest) {
   let audioChunks = []; // Lưu trữ chunks (PCM hoặc Opus)
   let isProcessing = false;
   let abortController = null;
@@ -232,6 +216,25 @@ function handleWebSocketSession(server, env, initialRequest) {
   let sessionId = "session_" + Date.now();
   let silenceTimer = null;
   let hasVoiceActivity = false;
+  let voicePacketsCount = 0;
+  let silencePacketsCount = 0;
+
+  // Xác định định danh thiết bị để gắn lịch sử trò chuyện KV
+  const deviceId = initialRequest.headers.get("Device-Id") || initialRequest.headers.get("Client-Id") || "default_esp32";
+  const historyKey = `chat_history_${deviceId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+
+  // Tải lịch sử 6 câu gần nhất từ Cloudflare KV CHAT_HISTORY khi kết nối
+  if (env.CHAT_HISTORY) {
+    try {
+      const savedHistory = await env.CHAT_HISTORY.get(historyKey, "json");
+      if (Array.isArray(savedHistory)) {
+        conversationHistory = savedHistory.slice(-6);
+        console.log(`[KV] Đã tải ${conversationHistory.length} câu lịch sử cho ${historyKey}`);
+      }
+    } catch (e) {
+      console.warn("[KV] Lỗi tải lịch sử trò chuyện:", e.message);
+    }
+  }
 
   const sendJSON = (obj) => {
     try {
@@ -267,442 +270,590 @@ function handleWebSocketSession(server, env, initialRequest) {
 
     sendJSON({ type: "state", state: "thinking" });
 
-          try {
-            // Chuẩn bị file Audio gửi tới Groq Whisper
-            let audioBlobFile;
-            if (isXiaozhiClient) {
-              // Client Xiaozhi gửi các gói raw Opus -> Đóng gói OGG Opus chuẩn RFC 7845
-              const oggBuffer = opusPacketsToOgg(audioChunks, 16000);
-              audioChunks = [];
-              audioBlobFile = new File([oggBuffer], "audio.ogg", { type: "audio/ogg" });
-            } else {
-              // Client cũ gửi raw PCM 16-bit 16kHz
-              let totalLength = 0;
-              for (const chunk of audioChunks) totalLength += chunk.byteLength;
-              const fullPcm = new Uint8Array(totalLength);
-              let offset = 0;
-              for (const chunk of audioChunks) {
-                fullPcm.set(chunk, offset);
-                offset += chunk.byteLength;
-              }
-              audioChunks = [];
-              const wavBuffer = pcmToWav(fullPcm.buffer, 16000, 1, 16);
-              audioBlobFile = new File([wavBuffer], "audio.wav", { type: "audio/wav" });
-            }
-
-            // BƯỚC 1: GROQ WHISPER STT SIÊU TỐC
-            const formData = new FormData();
-            formData.append("file", audioBlobFile);
-            formData.append("model", "whisper-large-v3-turbo");
-            formData.append("language", "vi");
-            formData.append("response_format", "json");
-            formData.append("temperature", "0");
-            formData.append("prompt", "Hội thoại hỏi đáp trực tiếp tiếng Việt, giao tiếp trợ lý ảo đời thường, tuyệt đối không có quảng cáo YouTube.");
-
-            const sttRes = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
-              method: "POST",
-              headers: { "Authorization": `Bearer ${env.GROQ_API_KEY}` },
-              body: formData,
-              signal
-            });
-
-            if (!sttRes.ok) throw new Error("STT Failed");
-            const sttData = await sttRes.json();
-            const userText = (sttData.text || "").trim();
-
-            if (!userText || signal.aborted) {
-              sendJSON({ type: "state", state: "listening" });
-              isProcessing = false;
-              return;
-            }
-
-            const lowerUser = userText.toLowerCase().replace(/[.,!?]/g, '').trim();
-
-            // Lọc ảo giác Whisper TRƯỚC KHI gửi kết quả STT về màn hình
-            const whisperHallucinations = [
-              "đăng ký kênh", "đăng kí kênh", "dang ky kenh", "subscribe", "sub kênh", "like và sub",
-              "ủng hộ kênh", "hẹn gặp lại", "cảm ơn các bạn đã theo dõi", "cảm ơn đã theo dõi",
-              "chúc các bạn", "video sau", "mời các bạn đón xem", "kênh của mình",
-              "chia sẻ video", "hãy subscribe", "like và chia sẻ", "bấm chuông",
-              "quý vị và các bạn", "chào mừng các bạn", "hẹn gặp lại quý vị", "đón xem video",
-              "ghiền mì gõ", "ghien mi go", "tạm biệt và hẹn gặp lại", "hẹn gặp lại các bạn",
-              "chúc bạn một ngày tốt lành", "hẹn gặp lại ở video sau"
-            ];
-            if (whisperHallucinations.some(h => lowerUser.includes(h))) {
-              console.log("[Whisper Hallucination Filtered]:", userText);
-              sendJSON({ type: "state", state: "listening" });
-              isProcessing = false;
-              return;
-            }
-
-            // Bắn kết quả STT về ESP32 hiển thị lên màn hình KHI ĐÃ XÁC NHẬN KHÔNG PHẢI ẢO GIÁC
-            sendJSON({ type: "stt", text: userText });
-
-            // Kiểm tra lệnh tắt nhạc / dừng nhạc
-            const stopMusicKeywords = ["tắt nhạc", "tat nhac", "dừng nhạc", "dung nhac", "ngừng nhạc", "ngung nhac"];
-            const isStopMusic = stopMusicKeywords.some(w => lowerUser.includes(w));
-
-            if (isStopMusic) {
-              sendJSON({ type: "music", action: "stop" });
-              sendJSON({ type: "tts", state: "start" });
-              sendJSON({ type: "state", state: "speaking" });
-              await speakSentence("Tôi đã tắt nhạc rồi bạn nhé.", sendJSON, sendBinary, isXiaozhiClient, signal);
-              sendJSON({ type: "tts", state: "stop" });
-              sendJSON({ type: "state", state: "listening" });
-              isProcessing = false;
-              return;
-            }
-
-            // Kiểm tra yêu cầu mở nhạc
-            const musicKeywords = [
-              "hát", "hát đi", "hát một bài", "hát bài", "ca một bài",
-              "mở bài", "bật bài", "phát bài", "nghe bài", "mở nhạc",
-              "bật nhạc", "phát nhạc", "chơi bài", "chơi nhạc", "bài hát",
-              "nghe nhạc", "play", "music", "song"
-            ];
-            const isMusic = musicKeywords.some(w => lowerUser.includes(w));
-
-            if (isMusic) {
-              let musicTitle = "Nhạc Trẻ V-Pop";
-              let musicUrl = "https://stream.zeno.fm/0r0xa792kwzuv";
-
-              if (lowerUser.includes("lofi") || lowerUser.includes("chill") || lowerUser.includes("thư giãn") || lowerUser.includes("ngủ")) {
-                musicTitle = "Nhạc Lofi Chill";
-                musicUrl = "https://stream.zeno.fm/f3wvbbqmdg8uv";
-              } else if (lowerUser.includes("piano") || lowerUser.includes("không lời") || lowerUser.includes("giao hưởng")) {
-                musicTitle = "Nhạc Piano Thư Giãn";
-                musicUrl = "https://streams.ilovemusic.de/iloveradio26.mp3";
-              } else if (lowerUser.includes("dance") || lowerUser.includes("edm") || lowerUser.includes("sôi động") || lowerUser.includes("tiếng anh")) {
-                musicTitle = "Nhạc EDM Sôi Động";
-                musicUrl = "https://streams.ilovemusic.de/iloveradio17.mp3";
-              }
-
-              const confirmText = `Tôi đang mở ${musicTitle.toLowerCase()} cho bạn đây, chúc bạn nghe nhạc vui vẻ nhé!`;
-              sendJSON({ type: "tts", state: "start" });
-              sendJSON({ type: "state", state: "speaking" });
-              await speakSentence(confirmText, sendJSON, sendBinary, isXiaozhiClient, signal);
-              sendJSON({ type: "tts", state: "stop" });
-
-              // Phát tín hiệu mở nhạc đến ESP32
-              sendJSON({
-                type: "music",
-                action: "play",
-                title: musicTitle,
-                url: musicUrl
-              });
-
-              sendJSON({
-                type: "done",
-                user_text: userText,
-                ai_text: confirmText,
-                exit: false
-              });
-              isProcessing = false;
-              return;
-            }
-
-            // Kiểm tra câu dừng / tạm biệt
-            const exitKeywords = ["tạm biệt", "tam biet", "bye", "dừng lại", "dung lai", "kết thúc", "ket thuc", "thôi nha", "thôi nhé", "nghỉ thôi", "đủ rồi"];
-            const isExit = exitKeywords.some(w => lowerUser.includes(w));
-
-            // BƯỚC 2: STREAMING GROQ LLM (Qwen)
-            sendJSON({ type: "tts", state: "start" });
-            sendJSON({ type: "state", state: "speaking" });
-
-            let weatherContext = await getWeatherAndContext(initialRequest);
-            const systemPrompt = `Bạn là trợ lý ảo AI thông minh, vui vẻ và tự nhiên.
-QUY TẮC BẮT BUỘC: Bạn với tui. Luôn xưng "tôi" và gọi người dùng là "bạn". Tuyệt đối không dùng anh/chị hay dạ/thưa.
-VỊ TRÍ MẶC ĐỊNH: Nhà của bạn ở Biên Hòa, Đồng Nai. Khi người dùng hỏi thời tiết hoặc hỏi địa điểm mà không nói rõ ở đâu, luôn mặc định là thời tiết tại Biên Hòa.
-Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 45 từ) nói thẳng vào trọng tâm để tương tác mượt mà qua loa thông minh. Không dùng ký tự markdown như *, #. ${weatherContext}`;
-
-            const messages = [
-              { role: "system", content: systemPrompt },
-              ...conversationHistory.slice(-4),
-              { role: "user", content: userText }
-            ];
-
-            const llmRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${env.GROQ_API_KEY}`,
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify({
-                model: "qwen/qwen3.8-27b",
-                messages: messages,
-                temperature: 0.7,
-                max_tokens: 180,
-                reasoning_effort: "none",
-                stream: true
-              }),
-              signal
-            });
-
-            if (!llmRes.ok || !llmRes.body) throw new Error("LLM Stream Failed");
-
-            // BƯỚC 3: SENTENCE STREAMING & HOÀI MY NEURAL TTS
-            const reader = llmRes.body.getReader();
-            const decoder = new TextDecoder("utf-8");
-            let accumulatedAiText = "";
-            let sentenceBuffer = "";
-            let sseBuffer = "";
-
-            while (true) {
-              if (signal.aborted) break;
-              const { done, value } = await reader.read();
-              if (done) break;
-
-              sseBuffer += decoder.decode(value, { stream: true });
-              const lines = sseBuffer.split("\n");
-              sseBuffer = lines.pop() || "";
-
-              for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed || !trimmed.startsWith("data: ")) continue;
-                if (trimmed === "data: [DONE]") break;
-
-                try {
-                  const dataJson = JSON.parse(trimmed.slice(6));
-                  const delta = dataJson.choices?.[0]?.delta?.content || "";
-                  if (delta) {
-                    accumulatedAiText += delta;
-                    sentenceBuffer += delta;
-
-                    sendJSON({ type: "llm_delta", delta: delta });
-
-                    if (hasSentenceBoundary(sentenceBuffer)) {
-                      const sentenceToSpeak = cleanSentence(sentenceBuffer);
-                      sentenceBuffer = "";
-
-                      if (sentenceToSpeak.length > 1 && !signal.aborted) {
-                        await speakSentence(sentenceToSpeak, sendJSON, sendBinary, isXiaozhiClient, signal);
-                      }
-                    }
-                  }
-                } catch (e) {}
-              }
-            }
-
-            // Phần câu còn sót lại
-            if (sentenceBuffer.trim().length > 0 && !signal.aborted) {
-              const remainingSentence = cleanSentence(sentenceBuffer);
-              if (remainingSentence.length > 1) {
-                await speakSentence(remainingSentence, sendJSON, sendBinary, isXiaozhiClient, signal);
-              }
-            }
-
-            if (!signal.aborted && accumulatedAiText.trim()) {
-              conversationHistory.push({ role: "user", content: userText });
-              conversationHistory.push({ role: "assistant", content: accumulatedAiText.trim() });
-              if (conversationHistory.length > 6) conversationHistory.splice(0, 2);
-            }
-
-            sendJSON({ type: "tts", state: "stop" });
-            sendJSON({
-              type: "done",
-              user_text: userText,
-              ai_text: accumulatedAiText.trim(),
-              exit: isExit
-            });
-            if (isExit) {
-              sendJSON({ type: "goodbye" });
-            }
-
-          } catch (err) {
-            if (!signal.aborted) {
-              console.error("[WS Error]:", err.message);
-              sendJSON({ type: "error", message: err.message });
-              sendJSON({ type: "tts", state: "stop" });
-              sendJSON({ type: "state", state: "listening" });
-            }
-          } finally {
-            isProcessing = false;
-            abortController = null;
-            hasVoiceActivity = false;
-          }
-  };
-
-    // Keep-alive ping gửi định kỳ mỗi 25s để giữ kết nối WebSocket không bị Cloudflare / ESP32 timeout
-    const pingInterval = setInterval(() => {
-      try {
-        sendJSON({ type: "ping" });
-      } catch (e) {}
-    }, 25000);
-
-    let voicePacketsCount = 0;
-    let silencePacketsCount = 0;
-
-    server.addEventListener("message", async (event) => {
-      // 1. DỮ LIỆU NHỊ PHÂN: AUDIO PACKETS TỪ MICRO (OPUS HOẶC PCM)
-      if (event.data instanceof ArrayBuffer) {
-        if (isProcessing) return;
-        if (event.data.byteLength > 0) {
-          audioChunks.push(new Uint8Array(event.data));
-
-          // Gói Opus chứa tiếng nói thường có dung lượng > 75 bytes
-          const isVoice = event.data.byteLength >= 75;
-
-          if (isVoice) {
-            voicePacketsCount++;
-            silencePacketsCount = 0;
-            hasVoiceActivity = true;
-          } else {
-            if (hasVoiceActivity && voicePacketsCount >= 4) {
-              silencePacketsCount++;
-              // 12 gói yên lặng liên tiếp sau khi nói = 12 * 60ms = 720ms -> Người dùng đã nói xong!
-              if (silencePacketsCount >= 12) {
-                console.log("[Auto-VAD]: Voice ended, 720ms silence detected. Processing audio...");
-                voicePacketsCount = 0;
-                silencePacketsCount = 0;
-                finishAndProcessAudio();
-                return;
-              }
-            }
-          }
-
-          // Giới hạn an toàn tối đa 7 giây nói liên tục (~120 gói * 60ms)
-          if (audioChunks.length >= 120) {
-            console.log("[Auto-VAD]: Max recording limit reached (~7s), processing...");
-            voicePacketsCount = 0;
-            silencePacketsCount = 0;
-            finishAndProcessAudio();
-          }
+    try {
+      // 1. Chuẩn bị file Audio gửi tới Groq Whisper
+      let audioBlobFile;
+      if (isXiaozhiClient) {
+        const oggBuffer = opusPacketsToOgg(audioChunks, 16000);
+        audioChunks = [];
+        audioBlobFile = new File([oggBuffer], "audio.ogg", { type: "audio/ogg" });
+      } else {
+        let totalLength = 0;
+        for (const chunk of audioChunks) totalLength += chunk.byteLength;
+        const fullPcm = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of audioChunks) {
+          fullPcm.set(chunk, offset);
+          offset += chunk.byteLength;
         }
+        audioChunks = [];
+        const wavBuffer = pcmToWav(fullPcm.buffer, 16000, 1, 16);
+        audioBlobFile = new File([wavBuffer], "audio.wav", { type: "audio/wav" });
+      }
+
+      // 2. Groq Whisper STT Siêu Tốc
+      const formData = new FormData();
+      formData.append("file", audioBlobFile);
+      formData.append("model", "whisper-large-v3-turbo");
+      formData.append("language", "vi");
+      formData.append("response_format", "json");
+      formData.append("temperature", "0");
+      formData.append("prompt", "Hội thoại hỏi đáp trực tiếp tiếng Việt, giao tiếp trợ lý ảo đời thường, tuyệt đối không có quảng cáo YouTube.");
+
+      const sttRes = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${env.GROQ_API_KEY}` },
+        body: formData,
+        signal
+      });
+
+      if (!sttRes.ok) throw new Error("STT Failed");
+      const sttData = await sttRes.json();
+      const userText = (sttData.text || "").trim();
+
+      if (!userText || signal.aborted) {
+        sendJSON({ type: "state", state: "listening" });
+        isProcessing = false;
         return;
       }
 
-      // 2. DỮ LIỆU TEXT / JSON CONTROL PACKETS
-      if (typeof event.data === "string") {
-        try {
-          const msg = JSON.parse(event.data);
+      // Lọc ảo giác Whisper trước khi in ra màn hình
+      if (isWhisperHallucination(userText)) {
+        console.log("[Whisper Hallucination Filtered]:", userText);
+        sendJSON({ type: "state", state: "listening" });
+        isProcessing = false;
+        return;
+      }
 
-          // A. BẮT TAY GIAO THỨC XIAOZHI (HELLO)
-          if (msg.type === "hello") {
-            isXiaozhiClient = true;
-            if (msg.session_id) sessionId = msg.session_id;
+      // Gửi kết quả nhận diện giọng nói về màn hình ESP32
+      sendJSON({ type: "stt", text: userText });
 
-            sendJSON({
-              type: "hello",
-              transport: "websocket",
-              session_id: sessionId,
-              audio_params: {
-                format: "opus",
-                sample_rate: 16000,
-                channels: 1,
-                frame_duration: 60
-              }
-            });
-            return;
-          }
+      const lowerUser = userText.toLowerCase().replace(/[.,!?]/g, '').trim();
 
-          // B. KEEP-ALIVE PING / PONG
-          if (msg.type === "ping") {
-            sendJSON({ type: "pong", ts: Date.now() });
-            return;
-          }
-          if (msg.type === "pong") {
-            return;
-          }
+      // A. KIỂM TRA LỆNH XÓA LỊCH SỬ TRÒ CHUYỆN
+      const isClearHistory = ["xóa lịch sử", "xoa lich su", "quên lịch sử", "quen lich su", "reset lịch sử", "xóa bộ nhớ", "xoa bo nho"].some(w => lowerUser.includes(w));
+      if (isClearHistory) {
+        conversationHistory = [];
+        if (env.CHAT_HISTORY) {
+          ctx.waitUntil(env.CHAT_HISTORY.delete(historyKey).catch(e => console.error(e)));
+        }
+        const confirmClear = "Tôi đã xóa toàn bộ lịch sử trò chuyện rồi bạn nhé.";
+        sendJSON({ type: "tts", state: "start" });
+        sendJSON({ type: "state", state: "speaking" });
+        await speakWithPacing(confirmClear, sendJSON, sendBinary, signal);
+        sendJSON({ type: "tts", state: "stop" });
+        sendJSON({ type: "state", state: "listening" });
+        isProcessing = false;
+        return;
+      }
 
-          // C. BẮT ĐẦU LƯỢT NÓI (START / LISTEN: START)
-          if (msg.type === "start" || (msg.type === "listen" && msg.state === "start")) {
-            if (silenceTimer) clearTimeout(silenceTimer);
-            audioChunks = [];
-            hasVoiceActivity = false;
-            voicePacketsCount = 0;
-            silencePacketsCount = 0;
-            sendJSON({ type: "state", state: "listening" });
-            return;
-          }
+      // B. KIỂM TRA LỆNH TẮT NHẠC / DỪNG NHẠC
+      const stopMusicKeywords = ["tắt nhạc", "tat nhac", "dừng nhạc", "dung nhac", "ngừng nhạc", "ngung nhac", "dừng phát nhạc"];
+      if (stopMusicKeywords.some(w => lowerUser.includes(w))) {
+        sendJSON({ type: "music", action: "stop" });
+        sendJSON({ type: "tts", state: "start" });
+        sendJSON({ type: "state", state: "speaking" });
+        await speakWithPacing("Tôi đã tắt nhạc rồi bạn nhé.", sendJSON, sendBinary, signal);
+        sendJSON({ type: "tts", state: "stop" });
+        sendJSON({ type: "state", state: "listening" });
+        isProcessing = false;
+        return;
+      }
 
-          // D. LỆNH CẮT NGANG (BARGE-IN / ABORT)
-          if (msg.type === "abort") {
-            if (silenceTimer) clearTimeout(silenceTimer);
-            if (abortController) {
-              abortController.abort();
-              abortController = null;
-            }
-            audioChunks = [];
-            hasVoiceActivity = false;
-            voicePacketsCount = 0;
-            silencePacketsCount = 0;
-            isProcessing = false;
-            sendJSON({ type: "state", state: "idle", interrupted: true });
-            if (isXiaozhiClient) {
-              sendJSON({ type: "tts", state: "stop" });
-            }
-            return;
-          }
+      // C. KIỂM TRA YÊU CẦU MỞ NHẠC (KHO NHẠC VIỆT)
+      const musicIntent = detectMusicIntent(userText);
+      if (musicIntent.isMusic) {
+        const workerOrigin = new URL(initialRequest.url).origin;
+        const targetStreamUrl = `${workerOrigin}/music?type=${musicIntent.type}`;
+        const confirmText = `Tôi đang mở ${musicIntent.title} cho bạn đây, chúc bạn nghe vui vẻ nhé!`;
 
-          // E. KẾT THÚC GIỌNG NÓI (STOP / LISTEN: STOP / AUDIO_END)
-          if (msg.type === "audio_end" || msg.type === "stop" || (msg.type === "listen" && msg.state === "stop")) {
-            voicePacketsCount = 0;
-            silencePacketsCount = 0;
-            finishAndProcessAudio();
-            return;
-          }
-        } catch (err) {
-          sendJSON({ type: "error", message: "Invalid JSON control packet" });
+        sendJSON({ type: "tts", state: "start" });
+        sendJSON({ type: "state", state: "speaking" });
+        
+        // Đọc câu thông báo đầy đủ với duration pacing
+        await speakWithPacing(confirmText, sendJSON, sendBinary, signal);
+        
+        sendJSON({ type: "tts", state: "stop" });
+
+        // Gửi lệnh phát nhạc cho MusicPlayer trên ESP32
+        sendJSON({
+          type: "music",
+          action: "play",
+          title: musicIntent.title,
+          url: targetStreamUrl
+        });
+
+        sendJSON({
+          type: "done",
+          user_text: userText,
+          ai_text: confirmText,
+          exit: false
+        });
+
+        isProcessing = false;
+        return;
+      }
+
+      // D. KIỂM TRA CÂU THOÁT / TẠM BIỆT
+      const isExit = isExitCommand(userText);
+
+      // E. TRÒ CHUYỆN AI VỚI GROQ LLM (Qwen) + REAL-TIME CLOCK + OPEN-METEO WEATHER
+      sendJSON({ type: "tts", state: "start" });
+      sendJSON({ type: "state", state: "speaking" });
+
+      const weatherContext = await getDetailedWeatherAndContext(userText);
+      const timeContext = getRealTimeContext();
+
+      const systemPrompt = `Bạn là trợ lý ảo AI thông minh, vui vẻ và tự nhiên.
+QUY TẮC XƯNG HÔ: Luôn xưng "tôi" và gọi người dùng là "bạn" (tuyệt đối không xưng em, không gọi anh/chị, không dùng dạ/thưa).
+THỜI GIAN THỰC TẾ: Bây giờ là ${timeContext.time}, ${timeContext.date}.
+VỊ TRÍ & THỜI TIẾT: ${weatherContext}
+HƯỚNG DẪN TRẢ LỜI: Hãy trả lời ngắn gọn, cô đọng từ 1 đến 3 câu (dưới 45 từ) nói thẳng vào trọng tâm câu hỏi để đàm thoại mượt mà qua loa thông minh. Tuyệt đối không dùng ký tự markdown như *, #, gạch đầu dòng.`;
+
+      // Cắt gọn lịch sử: tối đa 6 câu gần nhất
+      const historyContext = conversationHistory.slice(-6);
+
+      const messages = [
+        { role: "system", content: systemPrompt },
+        ...historyContext,
+        { role: "user", content: userText }
+      ];
+
+      const llmRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${env.GROQ_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "qwen/qwen3.8-27b",
+          messages: messages,
+          temperature: 0.7,
+          max_tokens: 160
+        }),
+        signal
+      });
+
+      if (!llmRes.ok) throw new Error("LLM Failed");
+
+      const llmData = await llmRes.json();
+      let aiText = (llmData.choices?.[0]?.message?.content || "").trim();
+      aiText = aiText.replace(/[*_#~]/g, '').trim();
+
+      if (!aiText) aiText = "Tôi đang lắng nghe bạn đây.";
+
+      // F. TỔNG HỢP GIỌNG ĐỌC HOÀI MY NEURAL VÀ PHÁT VỚI DURATION PACING
+      await speakWithPacing(aiText, sendJSON, sendBinary, signal);
+
+      // G. LƯU LỊCH SỬ VÀO CLOUDFLARE KV CHAT_HISTORY (TỐI ĐA 6 CÂU)
+      if (!signal.aborted && aiText) {
+        conversationHistory.push({ role: "user", content: userText });
+        conversationHistory.push({ role: "assistant", content: aiText });
+        if (conversationHistory.length > 6) {
+          conversationHistory = conversationHistory.slice(-6);
+        }
+
+        if (env.CHAT_HISTORY) {
+          ctx.waitUntil(
+            env.CHAT_HISTORY.put(historyKey, JSON.stringify(conversationHistory), {
+              expirationTtl: 86400 * 30 // Giữ 30 ngày
+            }).catch(e => console.error("[KV] Lưu lịch sử thất bại:", e))
+          );
         }
       }
-    });
 
-    server.addEventListener("close", () => {
-      clearInterval(pingInterval);
-      if (silenceTimer) clearTimeout(silenceTimer);
-      if (abortController) abortController.abort();
-      audioChunks = [];
-    });
+      sendJSON({ type: "tts", state: "stop" });
+      sendJSON({
+        type: "done",
+        user_text: userText,
+        ai_text: aiText,
+        exit: isExit
+      });
 
-    server.addEventListener("error", () => {
-      clearInterval(pingInterval);
-      if (silenceTimer) clearTimeout(silenceTimer);
-      if (abortController) abortController.abort();
-    });
-  }
+      if (isExit) {
+        sendJSON({ type: "goodbye" });
+      }
+
+    } catch (err) {
+      if (!signal.aborted) {
+        console.error("[WS Error]:", err.message);
+        sendJSON({ type: "error", message: err.message });
+        sendJSON({ type: "tts", state: "stop" });
+        sendJSON({ type: "state", state: "listening" });
+      }
+    } finally {
+      isProcessing = false;
+      abortController = null;
+      hasVoiceActivity = false;
+    }
+  };
+
+  // Keep-alive ping gửi định kỳ mỗi 25s
+  const pingInterval = setInterval(() => {
+    try {
+      sendJSON({ type: "ping" });
+    } catch (e) {}
+  }, 25000);
+
+  server.addEventListener("message", async (event) => {
+    // 1. DỮ LIỆU NHỊ PHÂN: AUDIO PACKETS TỪ MICRO (OPUS HOẶC PCM)
+    if (event.data instanceof ArrayBuffer) {
+      if (isProcessing) return;
+      if (event.data.byteLength > 0) {
+        audioChunks.push(new Uint8Array(event.data));
+
+        // Gói Opus tiếng nói thường có dung lượng > 75 bytes
+        const isVoice = event.data.byteLength >= 75;
+
+        if (isVoice) {
+          voicePacketsCount++;
+          silencePacketsCount = 0;
+          hasVoiceActivity = true;
+        } else {
+          if (hasVoiceActivity && voicePacketsCount >= 4) {
+            silencePacketsCount++;
+            // 12 gói yên lặng liên tiếp sau khi nói = 12 * 60ms = 720ms -> Người dùng đã nói xong!
+            if (silencePacketsCount >= 12) {
+              voicePacketsCount = 0;
+              silencePacketsCount = 0;
+              finishAndProcessAudio();
+              return;
+            }
+          }
+        }
+
+        // Giới hạn tối đa 7s nói liên tục (~120 gói * 60ms)
+        if (audioChunks.length >= 120) {
+          voicePacketsCount = 0;
+          silencePacketsCount = 0;
+          finishAndProcessAudio();
+        }
+      }
+      return;
+    }
+
+    // 2. DỮ LIỆU TEXT / JSON CONTROL PACKETS
+    if (typeof event.data === "string") {
+      try {
+        const msg = JSON.parse(event.data);
+
+        // A. BẮT TAY GIAO THỨC XIAOZHI (HELLO)
+        if (msg.type === "hello") {
+          isXiaozhiClient = true;
+          if (msg.session_id) sessionId = msg.session_id;
+
+          sendJSON({
+            type: "hello",
+            transport: "websocket",
+            session_id: sessionId,
+            audio_params: {
+              format: "opus",
+              sample_rate: 16000,
+              channels: 1,
+              frame_duration: 60
+            }
+          });
+          return;
+        }
+
+        // B. KEEP-ALIVE PING / PONG
+        if (msg.type === "ping") {
+          sendJSON({ type: "pong", ts: Date.now() });
+          return;
+        }
+        if (msg.type === "pong") {
+          return;
+        }
+
+        // C. BẮT ĐẦU LƯỢT NÓI (START / LISTEN: START)
+        if (msg.type === "start" || (msg.type === "listen" && msg.state === "start")) {
+          if (silenceTimer) clearTimeout(silenceTimer);
+          audioChunks = [];
+          hasVoiceActivity = false;
+          voicePacketsCount = 0;
+          silencePacketsCount = 0;
+          sendJSON({ type: "state", state: "listening" });
+          return;
+        }
+
+        // D. LỆNH CẮT NGANG (BARGE-IN / ABORT TỪ CẢM BIẾN CHẠM HOẶC MICRO)
+        if (msg.type === "abort") {
+          if (silenceTimer) clearTimeout(silenceTimer);
+          if (abortController) {
+            abortController.abort();
+            abortController = null;
+          }
+          audioChunks = [];
+          hasVoiceActivity = false;
+          voicePacketsCount = 0;
+          silencePacketsCount = 0;
+          isProcessing = false;
+          sendJSON({ type: "state", state: "idle", interrupted: true });
+          if (isXiaozhiClient) {
+            sendJSON({ type: "tts", state: "stop" });
+          }
+          return;
+        }
+
+        // E. KẾT THÚC GIỌNG NÓI (STOP / LISTEN: STOP / AUDIO_END)
+        if (msg.type === "audio_end" || msg.type === "stop" || (msg.type === "listen" && msg.state === "stop")) {
+          voicePacketsCount = 0;
+          silencePacketsCount = 0;
+          finishAndProcessAudio();
+          return;
+        }
+      } catch (err) {
+        sendJSON({ type: "error", message: "Invalid JSON control packet" });
+      }
+    }
+  });
+
+  server.addEventListener("close", () => {
+    clearInterval(pingInterval);
+    if (silenceTimer) clearTimeout(silenceTimer);
+    if (abortController) abortController.abort();
+    audioChunks = [];
+  });
+
+  server.addEventListener("error", () => {
+    clearInterval(pingInterval);
+    if (silenceTimer) clearTimeout(silenceTimer);
+    if (abortController) abortController.abort();
+  });
+}
 
 // ==============================================================================
-// PHÁT ÂM THANH CHO TỪNG CÂU (HOÀI MY NEURAL TTS)
+// PHÁT ÂM THANH HOÀI MY NEURAL KÈM ĐỒNG BỘ THỜI LƯỢNG (DURATION PACING)
+// KHẮC PHỤC TRIỆT ĐỂ LỖI ĐỌC LẮP BẮP / CẮT CÂU TRÊN ESP32
 // ==============================================================================
-async function speakSentence(text, sendJSON, sendBinary, isXiaozhi, signal) {
+async function speakWithPacing(text, sendJSON, sendBinary, signal) {
+  if (!text || (signal && signal.aborted)) return;
+
   try {
     sendJSON({ type: "tts", state: "sentence_start", text: text });
 
-    // Ưu tiên Edge TTS Hoài My Neural (audio-24khz-48kbitrate-mono-mp3)
+    let mp3Buffer = null;
+
+    // 1. Ưu tiên Edge TTS Hoài My Neural (24kHz MP3 48kbps)
     try {
-      const mp3Buffer = await fetchEdgeTTS(text, "vi-VN-HoaiMyNeural", "+0%", "audio-24khz-48kbitrate-mono-mp3", signal);
-      if (signal && signal.aborted) return;
-      if (mp3Buffer && mp3Buffer.byteLength > 0) {
-        sendBinary(mp3Buffer);
-        return;
-      }
+      mp3Buffer = await fetchEdgeTTS(text, "vi-VN-HoaiMyNeural", "+0%", "audio-24khz-48kbitrate-mono-mp3", signal);
     } catch (e) {
-      console.warn("[Edge-TTS Hoai My failed, fallback Google]:", e.message);
+      console.warn("[TTS] Hoai My error, fallback to Google TTS:", e.message);
     }
 
-    // Dự phòng Google TTS nếu Edge TTS lỗi
-    try {
-      const googleMp3 = await fetchGoogleTTS(text, signal);
-      if (signal && signal.aborted) return;
-      if (googleMp3 && googleMp3.byteLength > 0) {
-        sendBinary(googleMp3);
+    // 2. Dự phòng Google Translate TTS nếu Edge TTS không kết nối được
+    if (!mp3Buffer || mp3Buffer.byteLength === 0) {
+      try {
+        mp3Buffer = await fetchGoogleTTS(text, signal);
+      } catch (e) {
+        console.error("[TTS] Google TTS fallback failed:", e.message);
       }
-    } catch (e) {
-      console.warn("[Google TTS fallback failed]:", e.message);
     }
+
+    if (!mp3Buffer || mp3Buffer.byteLength === 0 || (signal && signal.aborted)) {
+      return;
+    }
+
+    // Gửi toàn bộ dữ liệu âm thanh MP3 về ESP32
+    sendBinary(mp3Buffer);
+
+    // Tính toán chính xác thời lượng âm thanh (MP3 48kbps mono ~ 6000 bytes/giây)
+    // Thêm 300ms trừ hao thời gian giải mã I2S
+    const durationMs = Math.max(1000, Math.round((mp3Buffer.byteLength / 6000) * 1000) + 300);
+
+    // Đợi ESP32 phát xong toàn bộ trước khi cho phép server gửi lệnh tiếp theo
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, durationMs);
+      if (signal) {
+        signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          resolve();
+        }, { once: true });
+      }
+    });
 
   } catch (err) {
-    console.error("[speakSentence error]:", err.message);
+    console.error("[speakWithPacing error]:", err.message);
   }
 }
 
-function hasSentenceBoundary(str) {
-  if (str.length >= 50) return /[.!?\n]/.test(str);
-  return /[.!?\n]/.test(str) && str.length >= 25;
+// ==============================================================================
+// BỘ NHẬN DIỆN KHO NHẠC VIỆT (VIETNAMESE MUSIC CATALOG INTENT)
+// ==============================================================================
+function detectMusicIntent(rawText) {
+  const lower = rawText.toLowerCase().replace(/[.,!?]/g, '').trim();
+
+  const musicKeywords = [
+    "hát", "hát đi", "hát một bài", "hát bài", "ca một bài",
+    "mở bài", "bật bài", "phát bài", "nghe bài", "mở nhạc",
+    "bật nhạc", "phát nhạc", "chơi bài", "chơi nhạc", "bài hát",
+    "nghe nhạc", "play", "music", "song"
+  ];
+
+  const isMusic = musicKeywords.some(w => lower.includes(w));
+  if (!isMusic) return { isMusic: false };
+
+  // 1. Nhạc Lofi / Thư giãn / Chill / Học bài / Ngủ
+  if (lower.includes("lofi") || lower.includes("chill") || lower.includes("thư giãn") || lower.includes("học bài") || lower.includes("ngủ")) {
+    return { isMusic: true, type: "lofi", title: "Nhạc Lofi Chill Việt" };
+  }
+
+  // 2. Bolero / Trữ tình / Nhạc vàng / Quê hương
+  if (lower.includes("bolero") || lower.includes("trữ tình") || lower.includes("nhạc vàng") || lower.includes("quê hương") || lower.includes("xưa")) {
+    return { isMusic: true, type: "bolero", title: "Nhạc Trữ Tình Bolero" };
+  }
+
+  // 3. Remix / Vinahouse / Sôi động / Quẩy / EDM
+  if (lower.includes("remix") || lower.includes("vinahouse") || lower.includes("vinahey") || lower.includes("sôi động") || lower.includes("quẩy") || lower.includes("dance") || lower.includes("edm") || lower.includes("bay")) {
+    return { isMusic: true, type: "remix", title: "Nhạc Remix Vinahouse Sôi Động" };
+  }
+
+  // 4. Piano / Nhạc không lời / Cổ điển
+  if (lower.includes("piano") || lower.includes("không lời") || lower.includes("cổ điển") || lower.includes("giao hưởng")) {
+    return { isMusic: true, type: "piano", title: "Nhạc Piano Thư Giãn" };
+  }
+
+  // 5. Sài Gòn / Radio
+  if (lower.includes("sài gòn") || lower.includes("radio") || lower.includes("đài")) {
+    return { isMusic: true, type: "saigon", title: "Sài Gòn Radio 99.8" };
+  }
+
+  // 6. Nhạc Trẻ V-Pop Hot / Sơn Tùng / Đen Vâu / Vũ / Tăng Duy Tân / Mặc định
+  return { isMusic: true, type: "vpop", title: "Nhạc Trẻ V-Pop Hot" };
 }
 
-function cleanSentence(str) {
-  return str.replace(/[*_#~]/g, '').trim();
+// ==============================================================================
+// BỘ LỌC ẢO GIÁC GROQ WHISPER
+// ==============================================================================
+function isWhisperHallucination(text) {
+  const lower = text.toLowerCase().trim();
+  const hallucinations = [
+    "đăng ký kênh", "đăng kí kênh", "dang ky kenh", "subscribe", "sub kênh", "like và sub",
+    "ủng hộ kênh", "hẹn gặp lại", "cảm ơn các bạn đã theo dõi", "cảm ơn đã theo dõi",
+    "chúc các bạn", "video sau", "mời các bạn đón xem", "kênh của mình",
+    "chia sẻ video", "hãy subscribe", "like và chia sẻ", "bấm chuông",
+    "quý vị và các bạn", "chào mừng các bạn", "hẹn gặp lại quý vị", "đón xem video",
+    "ghiền mì gõ", "ghien mi go", "tạm biệt và hẹn gặp lại", "hẹn gặp lại các bạn",
+    "chúc bạn một ngày tốt lành", "hẹn gặp lại ở video sau"
+  ];
+  return hallucinations.some(h => lower.includes(h));
+}
+
+function isExitCommand(text) {
+  const lower = text.toLowerCase().replace(/[.,!?]/g, '').trim();
+  const exitKeywords = [
+    "tạm biệt", "tam biet", "bye", "dừng lại", "dung lai",
+    "kết thúc", "ket thuc", "thôi nha", "thôi nhé", "nghỉ thôi", "đủ rồi"
+  ];
+  return exitKeywords.some(w => lower.includes(w));
+}
+
+// ==============================================================================
+// DỮ LIỆU THỜI GIAN THỰC (GMT+7 ASIA/HO_CHI_MINH)
+// ==============================================================================
+function getRealTimeContext() {
+  const now = new Date();
+  const timeFormatter = new Intl.DateTimeFormat("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+  const dateFormatter = new Intl.DateTimeFormat("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric"
+  });
+
+  return {
+    time: timeFormatter.format(now),
+    date: dateFormatter.format(now)
+  };
+}
+
+// ==============================================================================
+// DỮ LIỆU THỜI TIẾT OPEN-METEO THỰC TẾ
+// ==============================================================================
+let cachedWeather = "";
+let lastWeatherFetch = 0;
+
+async function getDetailedWeatherAndContext(queryText = "") {
+  const now = Date.now();
+  const lower = (queryText || "").toLowerCase();
+
+  // Bảng tọa độ các tỉnh thành phổ biến tại Việt Nam
+  const CITIES = {
+    "hà nội": { lat: 21.0285, lon: 105.8542, name: "Thủ đô Hà Nội" },
+    "sài gòn": { lat: 10.8231, lon: 106.6297, name: "TP. Hồ Chí Minh" },
+    "hồ chí minh": { lat: 10.8231, lon: 106.6297, name: "TP. Hồ Chí Minh" },
+    "tphcm": { lat: 10.8231, lon: 106.6297, name: "TP. Hồ Chí Minh" },
+    "đà nẵng": { lat: 16.0544, lon: 108.2022, name: "Đà Nẵng" },
+    "cần thơ": { lat: 10.0452, lon: 105.7469, name: "Cần Thơ" },
+    "hải phòng": { lat: 20.8449, lon: 106.6881, name: "Hải Phòng" },
+    "huế": { lat: 16.4637, lon: 107.5909, name: "Huế" },
+    "nha trang": { lat: 12.2388, lon: 109.1967, name: "Nha Trang" },
+    "đà lạt": { lat: 11.9404, lon: 108.4583, name: "Đà Lạt" },
+    "vũng tàu": { lat: 10.3460, lon: 107.0843, name: "Vũng Tàu" },
+    "bình dương": { lat: 10.9805, lon: 106.6519, name: "Bình Dương" }
+  };
+
+  // Tìm tỉnh thành người dùng nhắc tới trong câu hỏi
+  let targetCity = null;
+  for (const [key, cityInfo] of Object.entries(CITIES)) {
+    if (lower.includes(key)) {
+      targetCity = cityInfo;
+      break;
+    }
+  }
+
+  // Nếu không chỉ định thành phố khác, dùng mặc định: Biên Hòa, Đồng Nai (có cache 10 phút)
+  if (!targetCity) {
+    if (cachedWeather && (now - lastWeatherFetch < 600000)) {
+      return cachedWeather;
+    }
+    targetCity = { lat: 10.9574, lon: 106.8427, name: "Biên Hòa, Đồng Nai" };
+  }
+
+  try {
+    const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${targetCity.lat}&longitude=${targetCity.lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=Asia%2FBangkok`;
+    const res = await fetch(weatherUrl);
+
+    if (res.ok) {
+      const data = await res.json();
+      const temp = Math.round(data.current?.temperature_2m ?? 28);
+      const humidity = data.current?.relative_humidity_2m ?? 75;
+      const apparentTemp = Math.round(data.current?.apparent_temperature ?? temp);
+      const code = data.current?.weather_code ?? 0;
+      const weatherDesc = wmoCodeToVietnamese(code);
+      const tMax = Math.round(data.daily?.temperature_2m_max?.[0] ?? (temp + 3));
+      const tMin = Math.round(data.daily?.temperature_2m_min?.[0] ?? (temp - 3));
+
+      const weatherString = `Thời tiết tại ${targetCity.name}: Nhiệt độ hiện tại ${temp}°C (cảm giác như ${apparentTemp}°C), độ ẩm ${humidity}%, ${weatherDesc}. Dao động hôm nay từ ${tMin}°C đến ${tMax}°C.`;
+
+      if (targetCity.name.includes("Biên Hòa")) {
+        cachedWeather = weatherString;
+        lastWeatherFetch = now;
+      }
+      return weatherString;
+    }
+  } catch (e) {
+    console.warn("[Weather] Open-Meteo fetch error:", e.message);
+  }
+
+  return "Nhà bạn ở Biên Hòa, Đồng Nai. Thời tiết mát mẻ ổn định.";
+}
+
+function wmoCodeToVietnamese(code) {
+  if (code === 0) return "trời quang đãng, nắng đẹp";
+  if (code <= 3) return "trời có mây, nắng dịu mát";
+  if (code === 45 || code === 48) return "có sương mù";
+  if (code >= 51 && code <= 55) return "có mưa phùn nhẹ";
+  if (code >= 61 && code <= 65) return "có mưa rào";
+  if (code >= 80 && code <= 82) return "mưa rào từng cơn, có nơi mưa to";
+  if (code >= 95) return "có dông bão sấm sét";
+  return "thời tiết ổn định";
 }
 
 // ==============================================================================
@@ -1086,80 +1237,40 @@ async function fetchEdgeTTS(text, voice = "vi-VN-HoaiMyNeural", rate = "+0%", fo
 }
 
 // ==============================================================================
-// TRÍCH XUẤT RAW OPUS PACKETS TỪ OGG CONTAINER CỦA EDGE-TTS
+// DỰ PHÒNG: GOOGLE TRANSLATE TTS
 // ==============================================================================
-function extractOpusPacketsFromOgg(oggBuffer) {
-  const uint8 = new Uint8Array(oggBuffer);
-  const packets = [];
-  let offset = 0;
-  let pageIndex = 0;
-
-  while (offset + 27 <= oggBuffer.byteLength) {
-    if (uint8[offset] !== 0x4f || uint8[offset+1] !== 0x67 || uint8[offset+2] !== 0x67 || uint8[offset+3] !== 0x53) {
-      offset++;
-      continue;
-    }
-    const numSegments = uint8[offset + 26];
-    if (offset + 27 + numSegments > oggBuffer.byteLength) break;
-
-    const segmentTable = [];
-    let bodySize = 0;
-    for (let i = 0; i < numSegments; i++) {
-      const segLen = uint8[offset + 27 + i];
-      segmentTable.push(segLen);
-      bodySize += segLen;
-    }
-
-    const bodyOffset = offset + 27 + numSegments;
-    if (bodyOffset + bodySize > oggBuffer.byteLength) break;
-
-    let curOffset = bodyOffset;
-    let packetParts = [];
-
-    for (let i = 0; i < numSegments; i++) {
-      const segLen = segmentTable[i];
-      if (pageIndex >= 2 && segLen > 0) {
-        packetParts.push(uint8.subarray(curOffset, curOffset + segLen));
-      }
-      curOffset += segLen;
-      if (segLen < 255) {
-        if (pageIndex >= 2 && packetParts.length > 0) {
-          let totalLen = 0;
-          for (const p of packetParts) totalLen += p.byteLength;
-          const pkt = new Uint8Array(totalLen);
-          let pOff = 0;
-          for (const p of packetParts) {
-            pkt.set(p, pOff);
-            pOff += p.byteLength;
-          }
-          packets.push(pkt.buffer);
-        }
-        packetParts = [];
-      }
-    }
-
-    pageIndex++;
-    offset = bodyOffset + bodySize;
-  }
-  return packets;
+async function fetchGoogleTTS(text, signal = null) {
+  const encodedText = encodeURIComponent(text.trim());
+  const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=${encodedText}`;
+  const res = await fetch(ttsUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    },
+    signal: signal
+  });
+  if (!res.ok) throw new Error(`Google TTS failed: ${res.status}`);
+  return await res.arrayBuffer();
 }
 
 // ==============================================================================
-// ĐÓNG GÓI CÁC GÓI OPUS THÀNH FILE OGG OPUS CHUẨN CHO GROQ WHISPER
+// ĐÓNG GÓI OPUS VÀ PCM SANG FILE CHUẨN CHO GROQ WHISPER STT
 // ==============================================================================
 const OGG_CRC_TABLE = new Uint32Array(256);
-for (let i = 0; i < 256; i++) {
-  let r = i << 24;
-  for (let j = 0; j < 8; j++) {
-    r = (r & 0x80000000) ? (((r << 1) ^ 0x04c11db7) >>> 0) : ((r << 1) >>> 0);
+(function initCRC() {
+  for (let i = 0; i < 256; i++) {
+    let r = i << 24;
+    for (let j = 0; j < 8; j++) {
+      r = (r & 0x80000000) ? ((r << 1) ^ 0x04c11db7) : (r << 1);
+    }
+    OGG_CRC_TABLE[i] = r >>> 0;
   }
-  OGG_CRC_TABLE[i] = r;
-}
+})();
 
-function oggChecksum(buf) {
+function oggCrc(buf) {
+  const u8 = new Uint8Array(buf);
   let crc = 0;
-  for (let i = 0; i < buf.length; i++) {
-    crc = ((crc << 8) ^ OGG_CRC_TABLE[((crc >>> 24) ^ buf[i]) & 0xff]) >>> 0;
+  for (let i = 0; i < u8.length; i++) {
+    crc = ((crc << 8) ^ OGG_CRC_TABLE[((crc >>> 24) ^ u8[i]) & 0xff]) >>> 0;
   }
   return crc;
 }
@@ -1168,33 +1279,35 @@ function opusPacketsToOgg(packets, sampleRate = 16000) {
   const serial = 0x12345678;
   const pages = [];
 
-  function createPage(headerType, granulePos, pageSeq, packetData) {
-    const u8Data = new Uint8Array(packetData);
-    const numSegments = Math.ceil(u8Data.byteLength / 255) || 1;
+  function createPage(headerType, granule, seq, payloadBuf) {
+    const payload = new Uint8Array(payloadBuf);
+    const numSegments = Math.ceil(payload.length / 255) || 1;
     const headerLen = 27 + numSegments;
-    const pageBuf = new Uint8Array(headerLen + u8Data.byteLength);
-    const view = new DataView(pageBuf.buffer);
+    const pageLen = headerLen + payload.length;
+    const page = new ArrayBuffer(pageLen);
+    const view = new DataView(page);
+    const u8 = new Uint8Array(page);
 
-    pageBuf[0] = 0x4f; pageBuf[1] = 0x67; pageBuf[2] = 0x67; pageBuf[3] = 0x53; // "OggS"
-    pageBuf[4] = 0;
-    pageBuf[5] = headerType;
-    view.setBigUint64(6, BigInt(granulePos), true);
+    u8[0] = 0x4f; u8[1] = 0x67; u8[2] = 0x67; u8[3] = 0x53; // "OggS"
+    u8[4] = 0; // version
+    u8[5] = headerType;
+    view.setBigInt64(6, BigInt(granule), true);
     view.setUint32(14, serial, true);
-    view.setUint32(18, pageSeq, true);
-    view.setUint32(22, 0, true);
-    pageBuf[26] = numSegments;
+    view.setUint32(18, seq, true);
+    view.setUint32(22, 0, true); // CRC placeholder
+    u8[26] = numSegments;
 
-    let rem = u8Data.byteLength;
+    let rem = payload.length;
     for (let i = 0; i < numSegments; i++) {
-      const segLen = Math.min(rem, 255);
-      pageBuf[27 + i] = segLen;
-      rem -= segLen;
+      const seg = Math.min(rem, 255);
+      u8[27 + i] = seg;
+      rem -= seg;
     }
 
-    pageBuf.set(u8Data, headerLen);
-    const crc = oggChecksum(pageBuf);
+    u8.set(payload, headerLen);
+    const crc = oggCrc(page);
     view.setUint32(22, crc, true);
-    return pageBuf;
+    return page;
   }
 
   // Page 0: OpusHead
@@ -1246,22 +1359,6 @@ function opusPacketsToOgg(packets, sampleRate = 16000) {
   return finalOgg.buffer;
 }
 
-// ==============================================================================
-// DỰ PHÒNG: GOOGLE TRANSLATE TTS
-// ==============================================================================
-async function fetchGoogleTTS(text, signal = null) {
-  const encodedText = encodeURIComponent(text.trim());
-  const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=${encodedText}`;
-  const res = await fetch(ttsUrl, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    },
-    signal: signal
-  });
-  if (!res.ok) throw new Error(`Google TTS failed: ${res.status}`);
-  return await res.arrayBuffer();
-}
-
 function pcmToWav(pcmBuffer, sampleRate = 16000, numChannels = 1, bitsPerSample = 16) {
   const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
   const blockAlign = numChannels * (bitsPerSample / 8);
@@ -1294,32 +1391,5 @@ function pcmToWav(pcmBuffer, sampleRate = 16000, numChannels = 1, bitsPerSample 
 function writeAscii(view, offset, str) {
   for (let i = 0; i < str.length; i++) {
     view.setUint8(offset + i, str.charCodeAt(i));
-  }
-}
-
-let cachedWeather = "";
-let lastWeatherFetch = 0;
-
-async function getWeatherAndContext(request) {
-  const now = Date.now();
-  if (cachedWeather && (now - lastWeatherFetch < 600000)) {
-    return cachedWeather;
-  }
-  try {
-    const city = "Biên Hòa, Đồng Nai";
-    const lat = 10.9454;
-    const lon = 106.8243;
-    const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m`);
-    let outsideInfo = "";
-    if (weatherRes.ok) {
-      const wData = await weatherRes.json();
-      outsideInfo = `Thời tiết ngoài trời tại nhà bạn ở Biên Hòa: ${wData.current.temperature_2m}°C, độ ẩm ${wData.current.relative_humidity_2m}%. `;
-    }
-    const timeStr = new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", dateStyle: "full", timeStyle: "short" });
-    cachedWeather = `(Nhà bạn ở Biên Hòa, Đồng Nai. Thời gian hiện tại: ${timeStr}. ${outsideInfo})`;
-    lastWeatherFetch = now;
-    return cachedWeather;
-  } catch (e) {
-    return "(Nhà bạn ở Biên Hòa, Đồng Nai.)";
   }
 }
